@@ -1,0 +1,229 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Global safety net: deny all reads and writes by default.
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 2 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedEmail() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isAdmin() {
+      return isVerifiedEmail() && (
+        request.auth.token.email == 'mail2kunaln@gmail.com' ||
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid))
+      );
+    }
+
+    function isValidCoordinate(lat, lng) {
+      return (lat is int || lat is float) && lat >= -90 && lat <= 90 &&
+             (lng is int || lng is float) && lng >= -180 && lng <= 180;
+    }
+
+    function isOptionalString(data, field, maxLen) {
+      return !(field in data) || data[field] == null || (data[field] is string && data[field].size() <= maxLen);
+    }
+
+    function isOptionalPositiveNumber(data, field) {
+      return !(field in data) || data[field] == null || ((data[field] is int || data[field] is float) && data[field] > 0 && data[field] <= 10000000);
+    }
+
+    function isValidProvider(data, providerId) {
+      return data.keys().hasAll([
+        'providerId', 'name', 'providerType', 'address', 'city', 'state',
+        'latitude', 'longitude', 'source', 'lastVerified', 'dataOrigin'
+      ]) &&
+      data.keys().hasOnly([
+        'providerId', 'name', 'providerType', 'address', 'city', 'state', 'pincode',
+        'latitude', 'longitude', 'phone', 'website', 'source', 'lastVerified', 'dataOrigin'
+      ]) &&
+      isValidId(data.providerId) &&
+      data.providerId == providerId &&
+      data.name is string && data.name.size() >= 2 && data.name.size() <= 160 &&
+      data.providerType in [
+        'Hospital', 'Multi-Speciality Hospital', 'Clinic',
+        'Diagnostic Centre', 'Eye Hospital', 'Dialysis Centre', 'Rehabilitation Centre'
+      ] &&
+      data.address is string && data.address.size() >= 4 && data.address.size() <= 300 &&
+      data.city is string && data.city.size() >= 2 && data.city.size() <= 80 &&
+      data.state is string && data.state.size() >= 2 && data.state.size() <= 80 &&
+      isOptionalString(data, 'pincode', 16) &&
+      isValidCoordinate(data.latitude, data.longitude) &&
+      isOptionalString(data, 'phone', 40) &&
+      isOptionalString(data, 'website', 240) &&
+      data.source is string && data.source.size() >= 2 && data.source.size() <= 160 &&
+      data.lastVerified is string && data.lastVerified.size() >= 4 && data.lastVerified.size() <= 40 &&
+      data.dataOrigin in ['verified', 'demo'];
+    }
+
+    function isValidService(data, serviceId) {
+      return data.keys().hasAll(['serviceId', 'category', 'serviceName', 'description']) &&
+      data.keys().hasOnly(['serviceId', 'category', 'serviceName', 'description']) &&
+      isValidId(data.serviceId) &&
+      data.serviceId == serviceId &&
+      data.category in ['Consultation', 'Diagnostics', 'Treatment and Procedures'] &&
+      data.serviceName is string && data.serviceName.size() >= 2 && data.serviceName.size() <= 120 &&
+      data.description is string && data.description.size() >= 4 && data.description.size() <= 400;
+    }
+
+    function isValidProviderService(data, recordId) {
+      return data.keys().hasAll([
+        'recordId', 'providerId', 'serviceId', 'verificationStatus', 'source', 'lastVerified', 'dataOrigin'
+      ]) &&
+      data.keys().hasOnly([
+        'recordId', 'providerId', 'serviceId', 'verificationStatus', 'source', 'lastVerified', 'dataOrigin'
+      ]) &&
+      isValidId(data.recordId) &&
+      data.recordId == recordId &&
+      isValidId(data.providerId) &&
+      isValidId(data.serviceId) &&
+      data.verificationStatus in ['verified', 'demo', 'unverified'] &&
+      data.source is string && data.source.size() >= 2 && data.source.size() <= 160 &&
+      data.lastVerified is string && data.lastVerified.size() >= 4 && data.lastVerified.size() <= 40 &&
+      data.dataOrigin in ['verified', 'demo'];
+    }
+
+    function isValidMedicalCharge(data, chargeId) {
+      return data.keys().hasAll([
+        'chargeId', 'providerId', 'serviceId', 'chargeType',
+        'sourceName', 'lastVerified', 'verificationStatus', 'dataOrigin'
+      ]) &&
+      data.keys().hasOnly([
+        'chargeId', 'providerId', 'serviceId', 'amount', 'minAmount', 'maxAmount',
+        'chargeType', 'sourceName', 'sourceUrl', 'lastVerified', 'verificationStatus', 'dataOrigin'
+      ]) &&
+      isValidId(data.chargeId) &&
+      data.chargeId == chargeId &&
+      isValidId(data.providerId) &&
+      isValidId(data.serviceId) &&
+      isOptionalPositiveNumber(data, 'amount') &&
+      isOptionalPositiveNumber(data, 'minAmount') &&
+      isOptionalPositiveNumber(data, 'maxAmount') &&
+      (
+        !('minAmount' in data) || !('maxAmount' in data) ||
+        data.minAmount == null || data.maxAmount == null ||
+        data.minAmount <= data.maxAmount
+      ) &&
+      data.chargeType in ['consultation_fee', 'diagnostic_price', 'treatment_package', 'per_session'] &&
+      data.sourceName is string && data.sourceName.size() >= 2 && data.sourceName.size() <= 160 &&
+      isOptionalString(data, 'sourceUrl', 240) &&
+      data.lastVerified is string && data.lastVerified.size() >= 4 && data.lastVerified.size() <= 40 &&
+      data.verificationStatus in ['verified', 'demo', 'unverified'] &&
+      data.dataOrigin in ['verified', 'demo'];
+    }
+
+    function isValidAccommodation(data, accommodationId) {
+      return data.keys().hasAll([
+        'accommodationId', 'name', 'accommodationType', 'address', 'city',
+        'latitude', 'longitude', 'priceSource', 'lastVerified', 'dataOrigin'
+      ]) &&
+      data.keys().hasOnly([
+        'accommodationId', 'name', 'accommodationType', 'address', 'city',
+        'latitude', 'longitude', 'minNightlyPrice', 'maxNightlyPrice',
+        'priceSource', 'lastVerified', 'dataOrigin'
+      ]) &&
+      isValidId(data.accommodationId) &&
+      data.accommodationId == accommodationId &&
+      data.name is string && data.name.size() >= 2 && data.name.size() <= 160 &&
+      data.accommodationType in ['Hotel', 'Guest House', 'Lodge', 'Serviced Apartment', 'Dharamshala / Patient Stay'] &&
+      data.address is string && data.address.size() >= 4 && data.address.size() <= 300 &&
+      data.city is string && data.city.size() >= 2 && data.city.size() <= 80 &&
+      isValidCoordinate(data.latitude, data.longitude) &&
+      isOptionalPositiveNumber(data, 'minNightlyPrice') &&
+      isOptionalPositiveNumber(data, 'maxNightlyPrice') &&
+      (
+        !('minNightlyPrice' in data) || !('maxNightlyPrice' in data) ||
+        data.minNightlyPrice == null || data.maxNightlyPrice == null ||
+        data.minNightlyPrice <= data.maxNightlyPrice
+      ) &&
+      data.priceSource is string && data.priceSource.size() >= 2 && data.priceSource.size() <= 160 &&
+      data.lastVerified is string && data.lastVerified.size() >= 4 && data.lastVerified.size() <= 40 &&
+      data.dataOrigin in ['verified', 'demo'];
+    }
+
+    match /admins/{adminUid} {
+      allow get: if isSignedIn() && isValidId(adminUid) && request.auth.uid == adminUid;
+      allow list, create, update, delete: if false;
+    }
+
+    match /providers/{providerId} {
+      allow get: if isValidId(providerId);
+      allow list: if resource.data.dataOrigin in ['verified', 'demo'];
+      allow create: if isAdmin() && isValidId(providerId) && isValidProvider(incoming(), providerId);
+      allow update: if isAdmin() && isValidId(providerId) && isValidProvider(incoming(), providerId) &&
+        incoming().providerId == existing().providerId &&
+        incoming().diff(existing()).affectedKeys().hasOnly([
+          'name', 'providerType', 'address', 'city', 'state', 'pincode',
+          'latitude', 'longitude', 'phone', 'website', 'source', 'lastVerified', 'dataOrigin'
+        ]);
+      allow delete: if isAdmin() && isValidId(providerId);
+    }
+
+    match /services/{serviceId} {
+      allow get: if isValidId(serviceId);
+      allow list: if resource.data.category in ['Consultation', 'Diagnostics', 'Treatment and Procedures'];
+      allow create: if isAdmin() && isValidId(serviceId) && isValidService(incoming(), serviceId);
+      allow update: if isAdmin() && isValidId(serviceId) && isValidService(incoming(), serviceId) &&
+        incoming().serviceId == existing().serviceId &&
+        incoming().diff(existing()).affectedKeys().hasOnly(['category', 'serviceName', 'description']);
+      allow delete: if isAdmin() && isValidId(serviceId);
+    }
+
+    match /providerServices/{recordId} {
+      allow get: if isValidId(recordId);
+      allow list: if resource.data.dataOrigin in ['verified', 'demo'];
+      allow create: if isAdmin() && isValidId(recordId) && isValidProviderService(incoming(), recordId);
+      allow update: if isAdmin() && isValidId(recordId) && isValidProviderService(incoming(), recordId) &&
+        incoming().recordId == existing().recordId &&
+        incoming().diff(existing()).affectedKeys().hasOnly([
+          'providerId', 'serviceId', 'verificationStatus', 'source', 'lastVerified', 'dataOrigin'
+        ]);
+      allow delete: if isAdmin() && isValidId(recordId);
+    }
+
+    match /medicalCharges/{chargeId} {
+      allow get: if isValidId(chargeId);
+      allow list: if resource.data.dataOrigin in ['verified', 'demo'];
+      allow create: if isAdmin() && isValidId(chargeId) && isValidMedicalCharge(incoming(), chargeId);
+      allow update: if isAdmin() && isValidId(chargeId) && isValidMedicalCharge(incoming(), chargeId) &&
+        incoming().chargeId == existing().chargeId &&
+        incoming().diff(existing()).affectedKeys().hasOnly([
+          'providerId', 'serviceId', 'amount', 'minAmount', 'maxAmount',
+          'chargeType', 'sourceName', 'sourceUrl', 'lastVerified', 'verificationStatus', 'dataOrigin'
+        ]);
+      allow delete: if isAdmin() && isValidId(chargeId);
+    }
+
+    match /accommodations/{accommodationId} {
+      allow get: if isValidId(accommodationId);
+      allow list: if resource.data.dataOrigin in ['verified', 'demo'];
+      allow create: if isAdmin() && isValidId(accommodationId) && isValidAccommodation(incoming(), accommodationId);
+      allow update: if isAdmin() && isValidId(accommodationId) && isValidAccommodation(incoming(), accommodationId) &&
+        incoming().accommodationId == existing().accommodationId &&
+        incoming().diff(existing()).affectedKeys().hasOnly([
+          'name', 'accommodationType', 'address', 'city', 'latitude', 'longitude',
+          'minNightlyPrice', 'maxNightlyPrice', 'priceSource', 'lastVerified', 'dataOrigin'
+        ]);
+      allow delete: if isAdmin() && isValidId(accommodationId);
+    }
+  }
+}
