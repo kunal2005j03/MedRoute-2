@@ -34,6 +34,7 @@ import {
   fetchMapsBackendStatus,
   searchLiveAccommodationsViaBackend,
   searchLiveProvidersViaBackend,
+  type MapsBackendStatus,
 } from './services/mapsApiClient';
 import { calculateHaversineKm, isValidCoordinatePair } from './utils/safety';
 import { ErrorBoundary } from './components/ErrorBoundary';
@@ -143,9 +144,8 @@ function MedRouteWorkspace() {
   );
 
   // Google Maps backend key & Demo Key quota banner state
-  const [mapsKeyConfigured, setMapsKeyConfigured] = useState<boolean | null>(
-    null
-  );
+  const [mapsBackendStatus, setMapsBackendStatus] =
+    useState<MapsBackendStatus | null>(null);
   const [quotaReached, setQuotaReached] = useState(false);
 
   // Cloud Firestore catalog + optional admin auto-seeding state
@@ -205,8 +205,8 @@ function MedRouteWorkspace() {
   }, []);
 
   useEffect(() => {
-    void fetchMapsBackendStatus().then((s) =>
-      setMapsKeyConfigured(s.configured)
+    void fetchMapsBackendStatus().then((status) =>
+      setMapsBackendStatus(status)
     );
     void refreshFirestoreCatalog();
 
@@ -894,12 +894,20 @@ function MedRouteWorkspace() {
               {mode === 'live' ? (
                 <>
                   Using Google Maps APIs &amp; Cloud Firestore
-                  {mapsKeyConfigured === false && (
+                  {mapsBackendStatus && !mapsBackendStatus.backendReachable && (
                     <span className="text-amber-800 font-medium">
                       {' '}
-                      · GOOGLE_MAPS_API_KEY not configured on server
+                      · Backend Maps API route unavailable (/api/maps/status)
                     </span>
                   )}
+                  {mapsBackendStatus &&
+                    mapsBackendStatus.backendReachable &&
+                    !mapsBackendStatus.configured && (
+                      <span className="text-amber-800 font-medium">
+                        {' '}
+                        · GOOGLE_MAPS_API_KEY not configured on server
+                      </span>
+                    )}
                 </>
               ) : (
                 'Demo Data (Greater Kolkata illustrative sample · Works offline without API keys)'

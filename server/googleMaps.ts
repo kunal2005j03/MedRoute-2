@@ -2,37 +2,19 @@ import type { MapsApiDiagnostic, TravelMode } from '../src/types/medroute';
 
 const SOLUTION_ID = 'gmp_mcp_codeassist_v1_aistudio';
 
-let lastWorkingServerKey: string | null = null;
-
 /**
- * Collects unique server-side Google Maps API keys without ever exposing them to the client.
- * Checks GOOGLE_MAPS_API_KEY and VITE_GOOGLE_MAPS_API_KEY (injected by AI Studio provisioning).
- * If a key previously succeeded in this server process, it is prioritized first to avoid wasted retries.
+ * Reads the single server-side Google Maps API key exclusively from process.env.GOOGLE_MAPS_API_KEY.
+ * Never reads VITE_GOOGLE_MAPS_API_KEY and never exposes the key to frontend code.
  */
-export function getServerGoogleMapsApiKeys(): string[] {
-  const rawCandidates = [
-    process.env.GOOGLE_MAPS_API_KEY?.trim() || '',
-    process.env.VITE_GOOGLE_MAPS_API_KEY?.trim() || '',
-  ].filter((k) => k.length > 0);
-
-  const unique = Array.from(new Set(rawCandidates));
-  if (lastWorkingServerKey && unique.includes(lastWorkingServerKey)) {
-    return [
-      lastWorkingServerKey,
-      ...unique.filter((k) => k !== lastWorkingServerKey),
-    ];
-  }
-  return unique;
-}
-
 export function getServerGoogleMapsApiKey(): string | null {
-  return getServerGoogleMapsApiKeys()[0] || null;
+  const key = process.env.GOOGLE_MAPS_API_KEY?.trim() || '';
+  return key.length > 0 ? key : null;
 }
 
 export function sanitizeSecretFromText(text: string): string {
-  const keys = getServerGoogleMapsApiKeys();
+  const key = getServerGoogleMapsApiKey();
   let safe = text.replace(/AIza[0-9A-Za-z\-_]{20,}/g, '[REDACTED_API_KEY]');
-  for (const key of keys) {
+  if (key) {
     safe = safe.split(key).join('[REDACTED_API_KEY]');
   }
   return safe;
@@ -143,7 +125,12 @@ export function classifyGoogleApiError(params: {
     };
   }
 
-  if (httpStatus === 401 || httpStatus === 403 || combined.includes('permission_denied') || combined.includes('request_denied')) {
+  if (
+    httpStatus === 401 ||
+    httpStatus === 403 ||
+    combined.includes('permission_denied') ||
+    combined.includes('request_denied')
+  ) {
     return {
       category: 'AUTH_FAILURE',
       httpStatus,
@@ -163,7 +150,13 @@ export function classifyGoogleApiError(params: {
 }
 
 export function getAppRefererHeader(requestReferer?: string | null): string | null {
-  const candidates = [requestReferer, process.env.APP_URL];
+  const vercelOrigin = process.env.VERCEL_URL?.trim()
+    ? process.env.VERCEL_URL.trim().startsWith('http')
+      ? process.env.VERCEL_URL.trim()
+      : `https://${process.env.VERCEL_URL.trim()}`
+    : null;
+
+  const candidates = [requestReferer, process.env.APP_URL, vercelOrigin];
   for (const raw of candidates) {
     if (typeof raw !== 'string') continue;
     const trimmed = raw.trim();
@@ -202,56 +195,6 @@ function buildGoogleHeaders(
   return headers;
 }
 
-function isKeyAuthErrorStatus(status: number, data: any): boolean {
-  if (status === 401 || status === 403) return true;
-  const meta = extractGoogleErrorMeta(data);
-  const combined = `${meta.googleStatus || ''} ${meta.errorReason || ''} ${meta.rawMessage || ''}`.toLowerCase();
-  return (
-    combined.includes('permission_denied') ||
-    combined.includes('request_denied') ||
-    combined.includes('api_key_invalid') ||
-    combined.includes('billing') ||
-    combined.includes('service_disabled') ||
-    combined.includes('service_blocked') ||
-    combined.includes('referer') ||
-    combined.includes('referrer')
-  );
-}
-
-async function fetchGoogleJsonWithKeyFallback(params: {
-  url: string;
-  method: 'GET' | 'POST';
-  extraHeaders: Record<string, string>;
-  body?: string;
-  requestReferer?: string | null;
-}): Promise<{ response: Response; data: any }> {
-  const keys = getServerGoogleMapsApiKeys();
-  let lastResult: { response: Response; data: any } | null = null;
-
-  for (let i = 0; i < keys.length; i += 1) {
-    const key = keys[i];
-    const response = await fetch(params.url, {
-      method: params.method,
-      headers: buildGoogleHeaders(key, params.extraHeaders, params.requestReferer),
-      body: params.body,
-    });
-    const data = await response.json().catch(() => null);
-    lastResult = { response, data };
-
-    if (response.ok) {
-      lastWorkingServerKey = key;
-      return lastResult;
-    }
-
-    // Only retry with an alternate server key if this looks like an auth/billing/key error
-    if (!isKeyAuthErrorStatus(response.status, data)) {
-      return lastResult;
-    }
-  }
-
-  return lastResult!;
-}
-
 function extractGoogleErrorMeta(payload: any): {
   googleStatus: string | null;
   rawMessage: string | null;
@@ -268,7 +211,12 @@ function extractGoogleErrorMeta(payload: any): {
     const detailSummary = details
       .map((d: any) => {
         if (!d || typeof d !== 'object') return '';
-        const parts = [d.reason, d.domain, d.message, d.metadata ? JSON.stringify(d.metadata) : ''].filter(Boolean);
+        const parts = [
+          d.reason,
+          d.domain,
+          d.message,
+          d.metadata ? JSON.stringify(d.metadata) : '',
+        ].filter(Boolean);
         return parts.join(' ');
       })
       .filter(Boolean)
@@ -283,7 +231,11 @@ function extractGoogleErrorMeta(payload: any): {
   }
 
   // Geocoding classic envelope: { status: "REQUEST_DENIED", error_message: "..." }
-  if (typeof payload.status === 'string' && payload.status !== 'OK' && payload.status !== 'ZERO_RESULTS') {
+  if (
+    typeof payload.status === 'string' &&
+    payload.status !== 'OK' &&
+    payload.status !== 'ZERO_RESULTS'
+  ) {
     return {
       googleStatus: payload.status,
       rawMessage: typeof payload.error_message === 'string' ? payload.error_message : null,
@@ -300,7 +252,7 @@ export function missingKeyDiagnostic(apiName: string): MapsApiDiagnostic {
     httpStatus: 503,
     googleStatus: null,
     userMessage: `GOOGLE_MAPS_API_KEY is not configured on the server for ${apiName}. Configure the secret or switch to Demo Mode.`,
-    details: 'Set GOOGLE_MAPS_API_KEY in server environment secrets.',
+    details: 'Set GOOGLE_MAPS_API_KEY in server environment variables and redeploy.',
   };
 }
 
@@ -373,15 +325,19 @@ export async function geocodeAddressOnServer(params: {
       ? `https://geocode.googleapis.com/v4/geocode/address/${encodeURIComponent(params.address!.trim().slice(0, 200))}?regionCode=IN&languageCode=en`
       : `https://geocode.googleapis.com/v4/geocode/location/${params.latitude},${params.longitude}?languageCode=en`;
 
-    const { response, data } = await fetchGoogleJsonWithKeyFallback({
-      url: v4Url,
+    const response = await fetch(v4Url, {
       method: 'GET',
-      extraHeaders: {
-        'X-Goog-FieldMask':
-          'results.placeId,results.location,results.formattedAddress,results.addressComponents',
-      },
-      requestReferer: params.requestReferer,
+      headers: buildGoogleHeaders(
+        apiKey,
+        {
+          'X-Goog-FieldMask':
+            'results.placeId,results.location,results.formattedAddress,results.addressComponents',
+        },
+        params.requestReferer
+      ),
     });
+
+    const data = await response.json().catch(() => null);
 
     if (response.ok && data && typeof data === 'object') {
       const results = Array.isArray(data.results) ? data.results : [];
@@ -417,7 +373,8 @@ export async function geocodeAddressOnServer(params: {
       return {
         ok: true,
         result: {
-          label: params.address?.trim() || city || formattedAddress.split(',')[0] || formattedAddress,
+          label:
+            params.address?.trim() || city || formattedAddress.split(',')[0] || formattedAddress,
           formattedAddress,
           city,
           state,
@@ -437,8 +394,8 @@ export async function geocodeAddressOnServer(params: {
       apiName: 'Geocoding API',
     });
 
-    // If forward geocoding failed solely because Geocoding API is not enabled/billed on this starter key,
-    // use Places API (New) Text Search (already enabled on starter keys) to resolve the Indian address/PIN.
+    // If forward geocoding failed because Geocoding API is not enabled/restricted on the key,
+    // fall back to Places API (New) Text Search to resolve the Indian address/PIN.
     const canFallbackToPlaces =
       isForward &&
       (primaryDiagnostic.category === 'API_NOT_ENABLED' ||
@@ -455,23 +412,41 @@ export async function geocodeAddressOnServer(params: {
       ? cleanedAddress
       : `${cleanedAddress}, India`;
 
-    const { response: placesRes, data: placesData } = await fetchGoogleJsonWithKeyFallback({
-      url: 'https://places.googleapis.com/v1/places:searchText',
+    const placesRes = await fetch('https://places.googleapis.com/v1/places:searchText', {
       method: 'POST',
-      extraHeaders: {
-        'Content-Type': 'application/json',
-        'X-Goog-FieldMask':
-          'places.displayName,places.formattedAddress,places.location,places.addressComponents',
-      },
+      headers: buildGoogleHeaders(
+        apiKey,
+        {
+          'Content-Type': 'application/json',
+          'X-Goog-FieldMask':
+            'places.displayName,places.formattedAddress,places.location,places.addressComponents',
+        },
+        params.requestReferer
+      ),
       body: JSON.stringify({
         textQuery: placesQuery,
         pageSize: 1,
         languageCode: 'en',
         regionCode: 'IN',
       }),
-      requestReferer: params.requestReferer,
     });
+
+    const placesData = await placesRes.json().catch(() => null);
     if (!placesRes.ok || !placesData || typeof placesData !== 'object') {
+      const fallbackMeta = extractGoogleErrorMeta(placesData);
+      if (fallbackMeta.rawMessage && fallbackMeta.rawMessage !== primaryDiagnostic.details) {
+        return {
+          ok: false,
+          diagnostic: {
+            ...primaryDiagnostic,
+            details: sanitizeSecretFromText(
+              [primaryDiagnostic.details, `Places fallback: ${fallbackMeta.rawMessage}`]
+                .filter(Boolean)
+                .join(' | ')
+            ),
+          },
+        };
+      }
       return { ok: false, diagnostic: primaryDiagnostic };
     }
 
@@ -610,16 +585,20 @@ export async function searchProvidersPlacesOnServer(params: {
   ].join(',');
 
   try {
-    const { response, data } = await fetchGoogleJsonWithKeyFallback({
-      url: 'https://places.googleapis.com/v1/places:searchText',
+    const response = await fetch('https://places.googleapis.com/v1/places:searchText', {
       method: 'POST',
-      extraHeaders: {
-        'Content-Type': 'application/json',
-        'X-Goog-FieldMask': fieldMask,
-      },
+      headers: buildGoogleHeaders(
+        apiKey,
+        {
+          'Content-Type': 'application/json',
+          'X-Goog-FieldMask': fieldMask,
+        },
+        params.requestReferer
+      ),
       body: JSON.stringify(body),
-      requestReferer: params.requestReferer,
     });
+
+    const data = await response.json().catch(() => null);
 
     if (!response.ok) {
       const meta = extractGoogleErrorMeta(data);
@@ -652,7 +631,11 @@ export async function searchProvidersPlacesOnServer(params: {
       .filter((p: any) => {
         const lat = p?.location?.latitude;
         const lng = p?.location?.longitude;
-        return typeof p?.id === 'string' && typeof p?.displayName?.text === 'string' && isValidLatLng(lat, lng);
+        return (
+          typeof p?.id === 'string' &&
+          typeof p?.displayName?.text === 'string' &&
+          isValidLatLng(lat, lng)
+        );
       })
       .map((p: any) => ({
         placeId: String(p.id),
@@ -755,16 +738,20 @@ export async function searchAccommodationsPlacesOnServer(params: {
   ].join(',');
 
   try {
-    const { response, data } = await fetchGoogleJsonWithKeyFallback({
-      url: 'https://places.googleapis.com/v1/places:searchNearby',
+    const response = await fetch('https://places.googleapis.com/v1/places:searchNearby', {
       method: 'POST',
-      extraHeaders: {
-        'Content-Type': 'application/json',
-        'X-Goog-FieldMask': fieldMask,
-      },
+      headers: buildGoogleHeaders(
+        apiKey,
+        {
+          'Content-Type': 'application/json',
+          'X-Goog-FieldMask': fieldMask,
+        },
+        params.requestReferer
+      ),
       body: JSON.stringify(body),
-      requestReferer: params.requestReferer,
     });
+
+    const data = await response.json().catch(() => null);
 
     if (!response.ok) {
       const meta = extractGoogleErrorMeta(data);
@@ -785,7 +772,11 @@ export async function searchAccommodationsPlacesOnServer(params: {
       .filter((p: any) => {
         const lat = p?.location?.latitude;
         const lng = p?.location?.longitude;
-        return typeof p?.id === 'string' && typeof p?.displayName?.text === 'string' && isValidLatLng(lat, lng);
+        return (
+          typeof p?.id === 'string' &&
+          typeof p?.displayName?.text === 'string' &&
+          isValidLatLng(lat, lng)
+        );
       })
       .map((p: any) => ({
         placeId: String(p.id),
@@ -896,16 +887,20 @@ export async function computeSingleRouteOnServer(params: {
   }
 
   try {
-    const { response, data } = await fetchGoogleJsonWithKeyFallback({
-      url: 'https://routes.googleapis.com/directions/v2:computeRoutes',
+    const response = await fetch('https://routes.googleapis.com/directions/v2:computeRoutes', {
       method: 'POST',
-      extraHeaders: {
-        'Content-Type': 'application/json',
-        'X-Goog-FieldMask': 'routes.distanceMeters,routes.duration',
-      },
+      headers: buildGoogleHeaders(
+        apiKey,
+        {
+          'Content-Type': 'application/json',
+          'X-Goog-FieldMask': 'routes.distanceMeters,routes.duration',
+        },
+        params.requestReferer
+      ),
       body: JSON.stringify(body),
-      requestReferer: params.requestReferer,
     });
+
+    const data = await response.json().catch(() => null);
 
     if (!response.ok) {
       const meta = extractGoogleErrorMeta(data);

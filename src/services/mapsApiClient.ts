@@ -19,14 +19,28 @@ function notifyQuotaIfNeeded(diagnostic?: MapsApiDiagnostic | null) {
   }
 }
 
-export async function fetchMapsBackendStatus(): Promise<{ configured: boolean }> {
+export interface MapsBackendStatus {
+  configured: boolean;
+  backendReachable: boolean;
+}
+
+export async function fetchMapsBackendStatus(): Promise<MapsBackendStatus> {
   try {
-    const res = await fetch('/api/maps/status');
-    if (!res.ok) return { configured: false };
-    const data = await res.json();
-    return { configured: Boolean(data?.configured) };
+    const res = await fetch('/api/maps/status', { cache: 'no-store' });
+    if (!res.ok) {
+      return { configured: false, backendReachable: false };
+    }
+    const contentType = res.headers.get('content-type') || '';
+    if (!contentType.includes('application/json')) {
+      return { configured: false, backendReachable: false };
+    }
+    const data = await res.json().catch(() => null);
+    if (!data || typeof data.configured !== 'boolean') {
+      return { configured: false, backendReachable: false };
+    }
+    return { configured: data.configured, backendReachable: true };
   } catch {
-    return { configured: false };
+    return { configured: false, backendReachable: false };
   }
 }
 
