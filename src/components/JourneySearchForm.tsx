@@ -10,7 +10,11 @@ import type {
 } from '../types/medroute';
 import { lookupDemoLocation } from '../data/demoDataset';
 import { geocodeLocationViaBackend } from '../services/mapsApiClient';
-import { parsePositiveWholeNights } from '../utils/safety';
+import {
+  formatNumber,
+  isValidCoordinatePair,
+  parsePositiveWholeNights,
+} from '../utils/safety';
 import { DiagnosticAlert } from './DiagnosticAlert';
 
 interface JourneySearchFormProps {
@@ -56,9 +60,14 @@ export function JourneySearchForm({
     String(searchInput.nights || 1)
   );
   const [formError, setFormError] = useState<string | null>(null);
+  const [serviceSearchQuery, setServiceSearchQuery] = useState('');
 
   const categoryServices = services.filter(
     (s) => s.category === searchInput.category
+  );
+
+  const filteredCategoryServices = categoryServices.filter((s) =>
+    s.serviceName.toLowerCase().includes(serviceSearchQuery.toLowerCase().trim())
   );
 
   const selectedService =
@@ -69,6 +78,7 @@ export function JourneySearchForm({
   const handleCategoryChange = (category: ServiceCategory) => {
     const firstInCategory = services.find((s) => s.category === category);
     setFormError(null);
+    setServiceSearchQuery('');
     onChangeSearchInput({
       ...searchInput,
       category,
@@ -95,9 +105,18 @@ export function JourneySearchForm({
         const lat = pos.coords.latitude;
         const lng = pos.coords.longitude;
 
+        if (!isValidCoordinatePair(lat, lng)) {
+          setLocatingGps(false);
+          setLocationNotice(
+            'Unable to obtain valid GPS coordinates from your device. Please enter a starting location manually.'
+          );
+          onChangeSearchInput({ ...searchInput, locationMode: 'manual' });
+          return;
+        }
+
         let resolved: StartingLocation = {
           label: 'Current GPS Location',
-          formattedAddress: `${lat.toFixed(4)}, ${lng.toFixed(4)}`,
+          formattedAddress: `${formatNumber(lat, 4)}, ${formatNumber(lng, 4)}`,
           city: null,
           state: null,
           pincode: null,
@@ -323,23 +342,36 @@ export function JourneySearchForm({
           </div>
 
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 items-start">
-            <select
-              id="medroute-service-select"
-              value={selectedService?.serviceId || ''}
-              onChange={(e) =>
-                onChangeSearchInput({
-                  ...searchInput,
-                  serviceId: e.target.value,
-                })
-              }
-              className="w-full h-11 px-3.5 text-sm bg-white border border-slate-300 rounded-md text-slate-900 focus:border-[#0F766E] focus:outline-none"
-            >
-              {categoryServices.map((svc) => (
-                <option key={svc.serviceId} value={svc.serviceId}>
-                  {svc.serviceName}
-                </option>
-              ))}
-            </select>
+            <div className="space-y-2.5">
+              <input
+                type="text"
+                value={serviceSearchQuery}
+                onChange={(e) => setServiceSearchQuery(e.target.value)}
+                placeholder="Search services (e.g. Cardiology, MRI, Dialysis)..."
+                className="w-full h-10 px-3.5 text-sm bg-white border border-slate-300 rounded-md text-slate-900 focus:border-[#0F766E] focus:outline-none placeholder:text-slate-400"
+              />
+              <select
+                id="medroute-service-select"
+                value={selectedService?.serviceId || ''}
+                onChange={(e) =>
+                  onChangeSearchInput({
+                    ...searchInput,
+                    serviceId: e.target.value,
+                  })
+                }
+                className="w-full h-11 px-3.5 text-sm bg-white border border-slate-300 rounded-md text-slate-900 focus:border-[#0F766E] focus:outline-none"
+              >
+                {filteredCategoryServices.length === 0 ? (
+                  <option value="" disabled>No matching services found</option>
+                ) : (
+                  filteredCategoryServices.map((svc) => (
+                    <option key={svc.serviceId} value={svc.serviceId}>
+                      {svc.serviceName}
+                    </option>
+                  ))
+                )}
+              </select>
+            </div>
 
             {selectedService && (
               <div className="text-sm text-slate-600 bg-slate-50 border border-slate-200 rounded-md px-4 py-2.5">
@@ -457,8 +489,8 @@ export function JourneySearchForm({
                 Starting point set: {searchInput.startingLocation.formattedAddress}
               </div>
               <div className="text-xs font-mono text-slate-500 tabular-nums">
-                Coordinates: {searchInput.startingLocation.latitude.toFixed(4)},{' '}
-                {searchInput.startingLocation.longitude.toFixed(4)} · Source:{' '}
+                Coordinates: {formatNumber(searchInput.startingLocation.latitude, 4)},{' '}
+                {formatNumber(searchInput.startingLocation.longitude, 4)} · Source:{' '}
                 {searchInput.startingLocation.source === 'gps'
                   ? 'Device GPS'
                   : searchInput.startingLocation.source === 'geocode_live'

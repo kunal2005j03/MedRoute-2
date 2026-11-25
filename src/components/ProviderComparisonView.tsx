@@ -1,5 +1,15 @@
-import { ArrowLeft, ExternalLink, Scale, Trash2 } from 'lucide-react';
+import { useState } from 'react';
+import {
+  AlertCircle,
+  ArrowLeft,
+  Car,
+  ExternalLink,
+  Phone,
+  Scale,
+  Trash2,
+} from 'lucide-react';
 import type {
+  AccommodationRecord,
   DiscoveredProvider,
   JourneySearchInput,
   MedicalService,
@@ -7,11 +17,15 @@ import type {
 } from '../types/medroute';
 import { calculateJourneyCostBreakdown } from '../utils/costEngine';
 import {
+  buildGoogleMapsPlaceUrl,
   FARE_UNAVAILABLE_TEXT,
   formatDistanceKm,
   formatINRRange,
+  sanitizeExternalUrl,
+  sanitizeTelUri,
   UNAVAILABLE_TEXT,
 } from '../utils/safety';
+import { buildUberDeepLink } from '../utils/uberDeepLink';
 
 interface ProviderComparisonViewProps {
   searchInput: JourneySearchInput;
@@ -32,6 +46,67 @@ export function ProviderComparisonView({
   onInspectProvider,
   onBackToResults,
 }: ProviderComparisonViewProps) {
+  const [compUberMessage, setCompUberMessage] = useState<string | null>(null);
+  const [compUberFallbackUrl, setCompUberFallbackUrl] = useState<string | null>(null);
+
+  const handleCheckFareToAccommodation = (acc: AccommodationRecord) => {
+    setCompUberMessage(null);
+    setCompUberFallbackUrl(null);
+
+    const check = buildUberDeepLink({
+      startingLocation: searchInput.startingLocation,
+      locationMode: searchInput.locationMode,
+      destination: acc,
+    });
+
+    if (!check.ready || !check.url) {
+      setCompUberMessage(
+        check.errorMessage ||
+          'Unable to open Uber because required location details are missing.'
+      );
+      return;
+    }
+
+    try {
+      const opened = window.open(
+        check.url,
+        '_blank',
+        'noopener,noreferrer'
+      );
+      if (!opened) {
+        setCompUberMessage(
+          `Your browser blocked opening Uber in a new tab for ${acc.name}. Use the direct link below to check your fare in Uber.`
+        );
+        setCompUberFallbackUrl(check.url);
+      }
+    } catch {
+      setCompUberMessage(
+        `Browser navigation to Uber could not be launched automatically for ${acc.name}. Use the direct link below to check your fare in Uber.`
+      );
+      setCompUberFallbackUrl(check.url);
+    }
+  };
+
+  const buildBreakdownFor = (item: DiscoveredProvider) => {
+    const st = journeyStates[item.provider.providerId];
+    const modeRes = st?.travel?.modes?.[st.selectedTravelMode] || null;
+    const selectedAcc =
+      st?.accommodations.find(
+        (a) => a.accommodationId === st.selectedAccommodationId
+      ) || null;
+    return calculateJourneyCostBreakdown({
+      category: searchInput.category,
+      charge: item.charge,
+      manualRoundTripFare: st?.manualRoundTripFare || '',
+      travelCostConfig: st?.travelCostConfig,
+      routeModeResult: modeRes,
+      needsAccommodation: searchInput.needsAccommodation,
+      nights: searchInput.nights,
+      selectedAccommodation: selectedAcc,
+      manualDailyCommuteFare: st?.manualDailyCommuteFare || '',
+    });
+  };
+
   return (
     <section className="space-y-6">
       <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4 border-b border-slate-200 pb-4">
@@ -63,6 +138,31 @@ export function ProviderComparisonView({
           Back to Results
         </button>
       </div>
+
+      {compUberMessage && (
+        <div
+          role="status"
+          className="bg-amber-50 border border-amber-200 rounded-md px-4 py-3 text-xs sm:text-sm text-amber-900 flex flex-col gap-1.5"
+        >
+          <div className="flex items-start gap-2">
+            <AlertCircle className="w-4 h-4 shrink-0 mt-0.5 text-amber-700" />
+            <span>{compUberMessage}</span>
+          </div>
+          {compUberFallbackUrl && (
+            <div className="pl-6">
+              <a
+                href={compUberFallbackUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-1 font-medium text-[#0F2942] underline hover:text-[#0F766E]"
+              >
+                Open Uber directly
+                <ExternalLink className="w-3.5 h-3.5" />
+              </a>
+            </div>
+          )}
+        </div>
+      )}
 
       {comparedProviders.length === 0 ? (
         <div className="bg-white border border-slate-200 rounded-lg p-8 text-center space-y-4">
@@ -130,7 +230,7 @@ export function ProviderComparisonView({
                           onClick={() => onInspectProvider(item)}
                           className="inline-flex items-center gap-1 text-xs font-medium text-[#0F766E] hover:underline pt-1"
                         >
-                          Configure Travel & Stay
+                          Configure Travel &amp; Stay
                           <ExternalLink className="w-3 h-3" />
                         </button>
                       </div>
@@ -143,7 +243,7 @@ export function ProviderComparisonView({
                 {/* Distance & Travel Time */}
                 <tr>
                   <td className="py-3.5 px-5 font-medium text-slate-700 bg-slate-50/40">
-                    Distance & Travel Time
+                    Distance &amp; Travel Time
                   </td>
                   {comparedProviders.map((item) => {
                     const st = journeyStates[item.provider.providerId];
@@ -184,20 +284,8 @@ export function ProviderComparisonView({
                     Medical Service Charge
                   </td>
                   {comparedProviders.map((item) => {
-                    const st = journeyStates[item.provider.providerId];
-                    const selectedAcc =
-                      st?.accommodations.find(
-                        (a) => a.accommodationId === st.selectedAccommodationId
-                      ) || null;
-                    const breakdown = calculateJourneyCostBreakdown({
-                      category: searchInput.category,
-                      charge: item.charge,
-                      manualRoundTripFare: st?.manualRoundTripFare || '',
-                      needsAccommodation: searchInput.needsAccommodation,
-                      nights: searchInput.nights,
-                      selectedAccommodation: selectedAcc,
-                      manualDailyCommuteFare: st?.manualDailyCommuteFare || '',
-                    });
+                    const breakdown = buildBreakdownFor(item);
+                    const safeUrl = sanitizeExternalUrl(item.charge?.sourceUrl);
 
                     return (
                       <td
@@ -212,8 +300,25 @@ export function ProviderComparisonView({
                               )
                             : UNAVAILABLE_TEXT}
                         </div>
+                        <div className="text-xs text-slate-600 mt-0.5">
+                          {breakdown.medicalChargeConfidenceLabel}
+                        </div>
                         <div className="text-xs text-slate-500 mt-0.5">
-                          {item.charge?.sourceName || 'No tariff on file'}
+                          {safeUrl ? (
+                            <a
+                              href={safeUrl}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="text-[#0F766E] hover:underline"
+                            >
+                              {item.charge?.sourceName || 'Source'}
+                            </a>
+                          ) : (
+                            item.charge?.sourceName || 'No tariff on file'
+                          )}
+                          {item.charge?.lastVerified
+                            ? ` · ${item.charge.lastVerified}`
+                            : ''}
                         </div>
                       </td>
                     );
@@ -226,32 +331,26 @@ export function ProviderComparisonView({
                     Round-Trip Travel Estimate
                   </td>
                   {comparedProviders.map((item) => {
-                    const st = journeyStates[item.provider.providerId];
-                    const selectedAcc =
-                      st?.accommodations.find(
-                        (a) => a.accommodationId === st.selectedAccommodationId
-                      ) || null;
-                    const breakdown = calculateJourneyCostBreakdown({
-                      category: searchInput.category,
-                      charge: item.charge,
-                      manualRoundTripFare: st?.manualRoundTripFare || '',
-                      needsAccommodation: searchInput.needsAccommodation,
-                      nights: searchInput.nights,
-                      selectedAccommodation: selectedAcc,
-                      manualDailyCommuteFare: st?.manualDailyCommuteFare || '',
-                    });
+                    const breakdown = buildBreakdownFor(item);
 
                     return (
                       <td
                         key={item.provider.providerId}
-                        className="py-3.5 px-5 border-l border-slate-200 font-mono tabular-nums text-slate-900"
+                        className="py-3.5 px-5 border-l border-slate-200"
                       >
-                        {breakdown.travelRoundTrip
-                          ? formatINRRange(
-                              breakdown.travelRoundTrip.min,
-                              breakdown.travelRoundTrip.max
-                            )
-                          : FARE_UNAVAILABLE_TEXT}
+                        <div className="font-mono tabular-nums font-semibold text-slate-900">
+                          {breakdown.travelRoundTrip
+                            ? formatINRRange(
+                                breakdown.travelRoundTrip.min,
+                                breakdown.travelRoundTrip.max
+                              )
+                            : FARE_UNAVAILABLE_TEXT}
+                        </div>
+                        {breakdown.travelFormulaBreakdown && (
+                          <div className="text-xs font-mono text-slate-500 mt-0.5">
+                            {breakdown.travelFormulaBreakdown}
+                          </div>
+                        )}
                       </td>
                     );
                   })}
@@ -272,16 +371,23 @@ export function ProviderComparisonView({
                             (a) =>
                               a.accommodationId === st.selectedAccommodationId
                           ) || null;
-                        const breakdown = calculateJourneyCostBreakdown({
-                          category: searchInput.category,
-                          charge: item.charge,
-                          manualRoundTripFare: st?.manualRoundTripFare || '',
-                          needsAccommodation: searchInput.needsAccommodation,
-                          nights: searchInput.nights,
-                          selectedAccommodation: selectedAcc,
-                          manualDailyCommuteFare:
-                            st?.manualDailyCommuteFare || '',
-                        });
+                        const breakdown = buildBreakdownFor(item);
+                        const safeAccWebsite = selectedAcc
+                          ? sanitizeExternalUrl(selectedAcc.website)
+                          : null;
+                        const accMapsUrl = selectedAcc
+                          ? buildGoogleMapsPlaceUrl(
+                              selectedAcc.googleMapsUri,
+                              {
+                                latitude: selectedAcc.latitude,
+                                longitude: selectedAcc.longitude,
+                              },
+                              selectedAcc.name
+                            )
+                          : null;
+                        const telUri = selectedAcc
+                          ? sanitizeTelUri(selectedAcc.phoneNumber)
+                          : null;
 
                         return (
                           <td
@@ -301,6 +407,86 @@ export function ProviderComparisonView({
                                 ? selectedAcc.name
                                 : 'Open details to pick a stay'}
                             </div>
+                            {selectedAcc && (
+                              <div className="space-y-1.5 mt-1.5">
+                                <div className="flex flex-wrap items-center gap-2">
+                                  {telUri && selectedAcc.phoneNumber && (
+                                    <a
+                                      href={telUri}
+                                      className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium rounded border border-slate-300 bg-white text-[#0F2942] hover:bg-slate-50 hover:border-slate-400 transition-colors whitespace-nowrap"
+                                      title={`Call ${selectedAcc.name} at ${selectedAcc.phoneNumber}`}
+                                    >
+                                      <Phone className="w-3 h-3 text-[#0F766E]" />
+                                      <span>Call <span className="font-mono tabular-nums">{selectedAcc.phoneNumber}</span></span>
+                                    </a>
+                                  )}
+
+                                  <button
+                                    type="button"
+                                    onClick={() => handleCheckFareToAccommodation(selectedAcc)}
+                                    className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium rounded border border-slate-300 bg-white text-[#0F2942] hover:bg-slate-50 hover:border-slate-400 transition-colors whitespace-nowrap"
+                                    title={`Check fare in Uber to ${selectedAcc.name}`}
+                                  >
+                                    <Car className="w-3 h-3 text-[#0F766E]" />
+                                    Check fare in Uber
+                                  </button>
+                                </div>
+
+                                <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1 text-xs">
+                                  {safeAccWebsite ? (
+                                    <a
+                                      href={safeAccWebsite}
+                                      target="_blank"
+                                      rel="noopener noreferrer"
+                                      className="inline-flex items-center gap-1 font-medium text-[#0F766E] hover:underline whitespace-nowrap"
+                                    >
+                                      Visit Website
+                                      <ExternalLink className="w-3 h-3" />
+                                    </a>
+                                  ) : (
+                                    <span className="text-slate-400">
+                                      Website unavailable
+                                    </span>
+                                  )}
+                                  {accMapsUrl && (
+                                    <>
+                                      <span aria-hidden="true" className="text-slate-300">
+                                        ·
+                                      </span>
+                                      <a
+                                        href={accMapsUrl}
+                                        target="_blank"
+                                        rel="noopener noreferrer"
+                                        className="inline-flex items-center gap-1 font-medium text-[#0F2942] hover:underline whitespace-nowrap"
+                                      >
+                                        View on Google Maps
+                                        <ExternalLink className="w-3 h-3" />
+                                      </a>
+                                    </>
+                                  )}
+                                  {!telUri && (
+                                    <>
+                                      <span aria-hidden="true" className="text-slate-300">
+                                        ·
+                                      </span>
+                                      <span className="text-slate-400">
+                                        Phone not available
+                                      </span>
+                                      {accMapsUrl && (
+                                        <a
+                                          href={accMapsUrl}
+                                          target="_blank"
+                                          rel="noopener noreferrer"
+                                          className="font-medium text-[#0F766E] hover:underline whitespace-nowrap"
+                                        >
+                                          (Inquire on Maps)
+                                        </a>
+                                      )}
+                                    </>
+                                  )}
+                                </div>
+                              </div>
+                            )}
                           </td>
                         );
                       })}
@@ -311,22 +497,7 @@ export function ProviderComparisonView({
                         Local Commute ({searchInput.nights}d)
                       </td>
                       {comparedProviders.map((item) => {
-                        const st = journeyStates[item.provider.providerId];
-                        const selectedAcc =
-                          st?.accommodations.find(
-                            (a) =>
-                              a.accommodationId === st.selectedAccommodationId
-                          ) || null;
-                        const breakdown = calculateJourneyCostBreakdown({
-                          category: searchInput.category,
-                          charge: item.charge,
-                          manualRoundTripFare: st?.manualRoundTripFare || '',
-                          needsAccommodation: searchInput.needsAccommodation,
-                          nights: searchInput.nights,
-                          selectedAccommodation: selectedAcc,
-                          manualDailyCommuteFare:
-                            st?.manualDailyCommuteFare || '',
-                        });
+                        const breakdown = buildBreakdownFor(item);
 
                         return (
                           <td
@@ -352,20 +523,7 @@ export function ProviderComparisonView({
                     Total Estimated Journey Cost
                   </td>
                   {comparedProviders.map((item) => {
-                    const st = journeyStates[item.provider.providerId];
-                    const selectedAcc =
-                      st?.accommodations.find(
-                        (a) => a.accommodationId === st.selectedAccommodationId
-                      ) || null;
-                    const breakdown = calculateJourneyCostBreakdown({
-                      category: searchInput.category,
-                      charge: item.charge,
-                      manualRoundTripFare: st?.manualRoundTripFare || '',
-                      needsAccommodation: searchInput.needsAccommodation,
-                      nights: searchInput.nights,
-                      selectedAccommodation: selectedAcc,
-                      manualDailyCommuteFare: st?.manualDailyCommuteFare || '',
-                    });
+                    const breakdown = buildBreakdownFor(item);
 
                     return (
                       <td
@@ -373,11 +531,16 @@ export function ProviderComparisonView({
                         className="py-4 px-5 border-l border-slate-200"
                       >
                         {breakdown.isComplete && breakdown.totalRange ? (
-                          <div className="font-mono tabular-nums text-base font-bold text-[#0F2942]">
-                            {formatINRRange(
-                              breakdown.totalRange.min,
-                              breakdown.totalRange.max
-                            )}
+                          <div className="space-y-1">
+                            <div className="font-mono tabular-nums text-base font-bold text-[#0F2942]">
+                              {formatINRRange(
+                                breakdown.totalRange.min,
+                                breakdown.totalRange.max
+                              )}
+                            </div>
+                            <div className="text-xs text-slate-500">
+                              Confidence: {breakdown.estimateConfidenceLabel}
+                            </div>
                           </div>
                         ) : (
                           <div className="space-y-1">

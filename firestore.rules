@@ -30,6 +30,7 @@ service cloud.firestore {
     function isAdmin() {
       return isVerifiedEmail() && (
         request.auth.token.email == 'mail2kunaln@gmail.com' ||
+        request.auth.token.email == 'mail2rordan@gmail.com' ||
         exists(/databases/$(database)/documents/admins/$(request.auth.uid))
       );
     }
@@ -109,7 +110,8 @@ service cloud.firestore {
       ]) &&
       data.keys().hasOnly([
         'chargeId', 'providerId', 'serviceId', 'amount', 'minAmount', 'maxAmount',
-        'chargeType', 'sourceName', 'sourceUrl', 'lastVerified', 'verificationStatus', 'dataOrigin'
+        'chargeType', 'includesNote', 'sourceName', 'sourceUrl',
+        'lastVerified', 'verificationStatus', 'dataOrigin'
       ]) &&
       isValidId(data.chargeId) &&
       data.chargeId == chargeId &&
@@ -123,9 +125,13 @@ service cloud.firestore {
         data.minAmount == null || data.maxAmount == null ||
         data.minAmount <= data.maxAmount
       ) &&
-      data.chargeType in ['consultation_fee', 'diagnostic_price', 'treatment_package', 'per_session'] &&
+      data.chargeType in [
+        'consultation_fee', 'diagnostic_price', 'treatment_package',
+        'per_session', 'per_consultation', 'per_test', 'per_procedure'
+      ] &&
+      isOptionalString(data, 'includesNote', 280) &&
       data.sourceName is string && data.sourceName.size() >= 2 && data.sourceName.size() <= 160 &&
-      isOptionalString(data, 'sourceUrl', 240) &&
+      isOptionalString(data, 'sourceUrl', 500) &&
       data.lastVerified is string && data.lastVerified.size() >= 4 && data.lastVerified.size() <= 40 &&
       data.verificationStatus in ['verified', 'demo', 'unverified'] &&
       data.dataOrigin in ['verified', 'demo'];
@@ -208,7 +214,8 @@ service cloud.firestore {
         incoming().chargeId == existing().chargeId &&
         incoming().diff(existing()).affectedKeys().hasOnly([
           'providerId', 'serviceId', 'amount', 'minAmount', 'maxAmount',
-          'chargeType', 'sourceName', 'sourceUrl', 'lastVerified', 'verificationStatus', 'dataOrigin'
+          'chargeType', 'includesNote', 'sourceName', 'sourceUrl',
+          'lastVerified', 'verificationStatus', 'dataOrigin'
         ]);
       allow delete: if isAdmin() && isValidId(chargeId);
     }

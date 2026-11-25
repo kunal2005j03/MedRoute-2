@@ -1,16 +1,16 @@
+import { useEffect, useState } from 'react';
 import {
-  AlertTriangle,
+  AlertCircle,
   ArrowLeft,
   BedDouble,
   Car,
   Check,
   ExternalLink,
   Navigation,
+  Phone,
   Plus,
-  ShieldCheck,
 } from 'lucide-react';
 import type {
-  AccommodationRecord,
   AppMode,
   DiscoveredProvider,
   JourneySearchInput,
@@ -20,18 +20,20 @@ import type {
 } from '../types/medroute';
 import {
   calculateAccommodationExpense,
-  calculateJourneyCostBreakdown,
   extractMedicalChargeRange,
+  getMedicalChargeConfidenceLabel,
 } from '../utils/costEngine';
 import {
   buildGoogleMapsNavigationUrl,
+  buildGoogleMapsPlaceUrl,
   displayTextOrUnavailable,
-  FARE_UNAVAILABLE_TEXT,
   formatDistanceKm,
   formatINRRange,
   sanitizeExternalUrl,
+  sanitizeTelUri,
   UNAVAILABLE_TEXT,
 } from '../utils/safety';
+import { buildUberDeepLink } from '../utils/uberDeepLink';
 import { DiagnosticAlert } from './DiagnosticAlert';
 
 interface ProviderDetailsViewProps {
@@ -46,9 +48,8 @@ interface ProviderDetailsViewProps {
   onToggleCompare: () => void;
   onOpenCompare: () => void;
   onChangeTravelMode: (travelMode: TravelMode) => void;
-  onChangeManualRoundTripFare: (value: string) => void;
   onSelectAccommodation: (accommodationId: string | null) => void;
-  onChangeManualDailyCommuteFare: (value: string) => void;
+  onChangeManualDailyCommuteFare?: (value: string) => void;
   onSwitchToDemo: () => void;
 }
 
@@ -71,21 +72,39 @@ export function ProviderDetailsView({
   onToggleCompare,
   onOpenCompare,
   onChangeTravelMode,
-  onChangeManualRoundTripFare,
   onSelectAccommodation,
-  onChangeManualDailyCommuteFare,
   onSwitchToDemo,
 }: ProviderDetailsViewProps) {
-  const { provider, serviceVerification, charge, availableServices } =
+  const { provider, charge, availableServices } =
     providerItem;
 
-  const safeWebsite = sanitizeExternalUrl(provider.website);
-  const chargeRange = extractMedicalChargeRange(charge);
+  const [uberClickMessage, setUberClickMessage] = useState<string | null>(null);
+  const [uberFallbackUrl, setUberFallbackUrl] = useState<string | null>(null);
+  const [accUberMessage, setAccUberMessage] = useState<string | null>(null);
+  const [accUberFallbackUrl, setAccUberFallbackUrl] = useState<string | null>(null);
 
-  const selectedAccommodation: AccommodationRecord | null =
-    journeyState.accommodations.find(
-      (a) => a.accommodationId === journeyState.selectedAccommodationId
-    ) || null;
+  useEffect(() => {
+    setUberClickMessage(null);
+    setUberFallbackUrl(null);
+    setAccUberMessage(null);
+    setAccUberFallbackUrl(null);
+  }, [
+    provider.providerId,
+    searchInput.locationMode,
+    searchInput.startingLocation?.latitude,
+    searchInput.startingLocation?.longitude,
+  ]);
+
+  const safeWebsite = sanitizeExternalUrl(provider.website);
+  const providerTelUri = sanitizeTelUri(provider.phone);
+  const providerMapsUrl = buildGoogleMapsPlaceUrl(
+    provider.googleMapsUri,
+    { latitude: provider.latitude, longitude: provider.longitude },
+    provider.name
+  );
+  const safeChargeSourceUrl = sanitizeExternalUrl(charge?.sourceUrl);
+  const chargeRange = extractMedicalChargeRange(charge);
+  const chargeConfidenceLabel = getMedicalChargeConfidenceLabel(charge);
 
   const activeRouteMode = journeyState.selectedTravelMode;
   const routeModeInfo = journeyState.travel?.modes?.[activeRouteMode] || null;
@@ -97,22 +116,97 @@ export function ProviderDetailsView({
     activeRouteMode
   );
 
-  const costBreakdown = calculateJourneyCostBreakdown({
-    category: searchInput.category,
-    charge,
-    manualRoundTripFare: journeyState.manualRoundTripFare,
-    needsAccommodation: searchInput.needsAccommodation,
-    nights: searchInput.nights,
-    selectedAccommodation,
-    manualDailyCommuteFare: journeyState.manualDailyCommuteFare,
+  const uberCheck = buildUberDeepLink({
+    startingLocation: searchInput.startingLocation,
+    locationMode: searchInput.locationMode,
+    provider,
   });
 
-  const verificationLabel =
-    serviceVerification === 'verified'
-      ? 'Verified Service Record'
-      : serviceVerification === 'demo'
-        ? 'Demo Data — Illustrative Sample'
-        : 'Unverified Listing (Google Places)';
+  const isUberDisabled =
+    uberCheck.issue === 'INVALID_DESTINATION_COORDINATES';
+
+  const handleCheckFareInUber = () => {
+    setUberClickMessage(null);
+    setUberFallbackUrl(null);
+
+    const latestCheck = buildUberDeepLink({
+      startingLocation: searchInput.startingLocation,
+      locationMode: searchInput.locationMode,
+      provider,
+    });
+
+    if (!latestCheck.ready || !latestCheck.url) {
+      setUberClickMessage(
+        latestCheck.errorMessage ||
+          'Unable to open Uber because required location details are missing.'
+      );
+      return;
+    }
+
+    try {
+      const opened = window.open(
+        latestCheck.url,
+        '_blank',
+        'noopener,noreferrer'
+      );
+      if (!opened) {
+        setUberClickMessage(
+          'Your browser blocked opening Uber in a new tab. Use the direct link below to check your fare in Uber.'
+        );
+        setUberFallbackUrl(latestCheck.url);
+      }
+    } catch {
+      setUberClickMessage(
+        'Browser navigation to Uber could not be launched automatically. Use the direct link below to check your fare in Uber.'
+      );
+      setUberFallbackUrl(latestCheck.url);
+    }
+  };
+
+  const handleCheckFareToAccommodation = (acc: DiscoveredProvider['charge'] extends null ? any : any) => {
+    setAccUberMessage(null);
+    setAccUberFallbackUrl(null);
+
+    const check = buildUberDeepLink({
+      startingLocation: searchInput.startingLocation,
+      locationMode: searchInput.locationMode,
+      destination: acc,
+    });
+
+    if (!check.ready || !check.url) {
+      setAccUberMessage(
+        check.errorMessage ||
+          'Unable to open Uber because required location details are missing.'
+      );
+      return;
+    }
+
+    try {
+      const opened = window.open(
+        check.url,
+        '_blank',
+        'noopener,noreferrer'
+      );
+      if (!opened) {
+        setAccUberMessage(
+          `Your browser blocked opening Uber in a new tab for ${acc.name}. Use the direct link below to check your fare in Uber.`
+        );
+        setAccUberFallbackUrl(check.url);
+      }
+    } catch {
+      setAccUberMessage(
+        `Browser navigation to Uber could not be launched automatically for ${acc.name}. Use the direct link below to check your fare in Uber.`
+      );
+      setAccUberFallbackUrl(check.url);
+    }
+  };
+
+
+
+  const tollEstimateText =
+    routeModeInfo?.tollInfo?.hasTolls && routeModeInfo.tollInfo.estimatedPrices.length > 0
+      ? routeModeInfo.tollInfo.estimatedPrices.map((p) => p.formattedText).join(' + ')
+      : null;
 
   return (
     <section className="space-y-8">
@@ -167,32 +261,12 @@ export function ProviderDetailsView({
       <div className="bg-white border border-slate-200 rounded-lg p-6 space-y-6">
         <div className="space-y-2">
           <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
-            <span
-              className={`inline-flex items-center gap-1 font-medium ${
-                serviceVerification === 'verified'
-                  ? 'text-emerald-700'
-                  : serviceVerification === 'demo'
-                    ? 'text-[#0F766E]'
-                    : 'text-amber-700'
-              }`}
-            >
-              {serviceVerification === 'unverified' ? (
-                <AlertTriangle className="w-3.5 h-3.5" />
-              ) : (
-                <ShieldCheck className="w-3.5 h-3.5" />
-              )}
-              {verificationLabel}
-            </span>
-            <span aria-hidden="true" className="text-slate-300">
-              ·
-            </span>
+
             <span className="text-slate-600">{provider.providerType}</span>
             <span aria-hidden="true" className="text-slate-300">
               ·
             </span>
-            <span className="text-slate-500">
-              Source: {provider.source}
-            </span>
+            <span className="text-slate-500">Source: {provider.source}</span>
             <span aria-hidden="true" className="text-slate-300">
               ·
             </span>
@@ -215,7 +289,30 @@ export function ProviderDetailsView({
           <div>
             <dt className="text-xs font-medium text-slate-500">Contact Number</dt>
             <dd className="mt-1 font-mono text-slate-900 tabular-nums">
-              {displayTextOrUnavailable(provider.phone)}
+              {providerTelUri && provider.phone ? (
+                <a
+                  href={providerTelUri}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md border border-slate-300 bg-white text-[#0F2942] hover:bg-slate-50 hover:border-slate-400 transition-colors whitespace-nowrap"
+                  title={`Call ${provider.name} at ${provider.phone}`}
+                >
+                  <Phone className="w-3.5 h-3.5 text-[#0F766E]" />
+                  <span>Call <span className="font-mono tabular-nums">{provider.phone}</span></span>
+                </a>
+              ) : (
+                <span className="text-slate-500 inline-flex items-center gap-1.5 text-xs font-sans">
+                  <span>Phone not available</span>
+                  {providerMapsUrl && (
+                    <a
+                      href={providerMapsUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="font-medium text-[#0F766E] hover:underline"
+                    >
+                      (Inquire on Maps)
+                    </a>
+                  )}
+                </span>
+              )}
             </dd>
           </div>
 
@@ -249,23 +346,48 @@ export function ProviderDetailsView({
             </dd>
           </div>
 
-          <div>
+          <div className="md:col-span-1 lg:col-span-1">
             <dt className="text-xs font-medium text-slate-500">
-              Published Medical Service Charge
+              {charge ? chargeConfidenceLabel : 'Published Medical Service Charge'}
             </dt>
-            <dd className="mt-1 space-y-0.5">
+            <dd className="mt-1 space-y-1">
               <div className="font-mono font-semibold text-base text-[#0F2942] tabular-nums">
                 {chargeRange
                   ? formatINRRange(chargeRange.min, chargeRange.max)
                   : UNAVAILABLE_TEXT}
+                {charge && chargeRange && (
+                  <span className="ml-1.5 text-xs font-sans font-normal text-slate-500">
+                    ({charge.chargeType.replace(/_/g, ' ')})
+                  </span>
+                )}
               </div>
-              <div className="text-xs text-slate-500">
-                {charge
-                  ? `${charge.sourceName} · Verified ${charge.lastVerified}`
-                  : 'No published charge record on file'}
+              <div className="text-xs text-slate-600">
+                {charge ? (
+                  <>
+                    Source:{' '}
+                    {safeChargeSourceUrl ? (
+                      <a
+                        href={safeChargeSourceUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex items-center gap-1 text-[#0F766E] hover:underline"
+                      >
+                        {charge.sourceName}
+                        <ExternalLink className="w-3 h-3" />
+                      </a>
+                    ) : (
+                      charge.sourceName
+                    )}{' '}
+                    · Verified: {charge.lastVerified}
+                  </>
+                ) : (
+                  'No published charge record on file'
+                )}
               </div>
               {charge?.includesNote && (
-                <div className="text-xs text-slate-600">{charge.includesNote}</div>
+                <div className="text-xs text-slate-600">
+                  Notes: {charge.includesNote}
+                </div>
               )}
             </dd>
           </div>
@@ -284,7 +406,7 @@ export function ProviderDetailsView({
 
         <div className="border-t border-slate-100 pt-4 text-sm">
           <span className="text-xs font-medium text-slate-500 block mb-1">
-            Available Specialities & Services on Record
+            Available Specialities &amp; Services on Record
           </span>
           {availableServices.length > 0 ? (
             <p className="text-slate-800 leading-relaxed">
@@ -300,13 +422,13 @@ export function ProviderDetailsView({
         </div>
       </div>
 
-      {/* Step 7: Travel Information & Navigation */}
+      {/* Step 7: Travel & Navigation */}
       <div className="bg-white border border-slate-200 rounded-lg p-6 space-y-5">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
           <div className="space-y-0.5">
             <h2 className="text-lg font-semibold text-[#0F2942] flex items-center gap-2">
               <Car className="w-5 h-5 text-[#0F766E]" />
-              Travel Information
+              Travel &amp; Navigation
             </h2>
             <p className="text-xs text-slate-500">
               {mode === 'live'
@@ -315,16 +437,55 @@ export function ProviderDetailsView({
             </p>
           </div>
 
-          <a
-            href={navigationUrl}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="inline-flex items-center justify-center gap-2 px-4 py-2 text-sm font-medium text-white bg-[#0F2942] rounded-md hover:bg-[#163A5C] transition-colors whitespace-nowrap shrink-0"
-          >
-            <Navigation className="w-4 h-4" />
-            Open in Google Maps
-          </a>
+          <div className="flex flex-wrap items-center gap-2.5 shrink-0">
+            <a
+              href={navigationUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center justify-center gap-2 px-4 py-2 text-sm font-medium text-white bg-[#0F2942] rounded-md hover:bg-[#163A5C] transition-colors whitespace-nowrap shrink-0"
+            >
+              <Navigation className="w-4 h-4" />
+              Open in Google Maps
+            </a>
+
+            <button
+              type="button"
+              onClick={handleCheckFareInUber}
+              disabled={isUberDisabled}
+              className="inline-flex items-center justify-center gap-2 px-4 py-2 text-sm font-medium text-[#0F2942] bg-white border border-slate-300 rounded-md hover:bg-slate-50 hover:border-slate-400 disabled:opacity-50 disabled:cursor-not-allowed transition-colors whitespace-nowrap shrink-0"
+            >
+              <ExternalLink className="w-4 h-4" />
+              Check fare in Uber
+            </button>
+          </div>
         </div>
+
+        {(isUberDisabled && uberCheck.errorMessage) || uberClickMessage ? (
+          <div
+            role="status"
+            className="bg-amber-50 border border-amber-200 rounded-md px-4 py-3 text-xs sm:text-sm text-amber-900 flex flex-col gap-1.5"
+          >
+            <div className="flex items-start gap-2">
+              <AlertCircle className="w-4 h-4 shrink-0 mt-0.5 text-amber-700" />
+              <span>
+                {uberClickMessage || uberCheck.errorMessage}
+              </span>
+            </div>
+            {uberFallbackUrl && (
+              <div className="pl-6">
+                <a
+                  href={uberFallbackUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-1 font-medium text-[#0F2942] underline hover:text-[#0F766E]"
+                >
+                  Open Uber directly
+                  <ExternalLink className="w-3.5 h-3.5" />
+                </a>
+              </div>
+            )}
+          </div>
+        ) : null}
 
         {journeyState.travelError && (
           <DiagnosticAlert
@@ -358,13 +519,23 @@ export function ProviderDetailsView({
         </div>
 
         {journeyState.travelLoading ? (
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 animate-pulse">
+          <div
+            className={`grid grid-cols-1 ${
+              activeRouteMode === 'TRANSIT' ? 'sm:grid-cols-3' : 'sm:grid-cols-2'
+            } gap-4 animate-pulse`}
+          >
             <div className="h-16 bg-slate-100 rounded-md" />
             <div className="h-16 bg-slate-100 rounded-md" />
-            <div className="h-16 bg-slate-100 rounded-md" />
+            {activeRouteMode === 'TRANSIT' && (
+              <div className="h-16 bg-slate-100 rounded-md" />
+            )}
           </div>
         ) : (
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 border-t border-slate-100 pt-4">
+          <div
+            className={`grid grid-cols-1 ${
+              activeRouteMode === 'TRANSIT' ? 'sm:grid-cols-3' : 'sm:grid-cols-2'
+            } gap-4 border-t border-slate-100 pt-4`}
+          >
             <div className="space-y-1">
               <div className="text-xs font-medium text-slate-500">
                 Road Distance ({TRAVEL_MODE_LABELS[activeRouteMode]})
@@ -374,6 +545,11 @@ export function ProviderDetailsView({
                   ? formatDistanceKm(routeModeInfo.distanceKm)
                   : UNAVAILABLE_TEXT}
               </div>
+              {tollEstimateText && (
+                <p className="text-xs text-slate-600">
+                  Routes API toll estimate (one-way): {tollEstimateText}
+                </p>
+              )}
             </div>
 
             <div className="space-y-1">
@@ -390,48 +566,44 @@ export function ProviderDetailsView({
               )}
             </div>
 
-            <div className="space-y-1">
-              <div className="text-xs font-medium text-slate-500">
-                Confirmed Operator Fare
+            {activeRouteMode === 'TRANSIT' && (
+              <div className="space-y-1">
+                <div className="text-xs font-medium text-slate-500">
+                  Google Routes Transit Fare (One-Way)
+                </div>
+                {routeModeInfo?.transitFare ? (
+                  <>
+                    <div className="text-lg font-semibold font-mono text-[#0F766E] tabular-nums">
+                      {routeModeInfo.transitFare.formattedText}
+                    </div>
+                    <p className="text-xs text-slate-500">
+                      Returned by Google Routes API ({routeModeInfo.transitFare.currencyCode}).
+                    </p>
+                  </>
+                ) : (
+                  <>
+                    <div className="text-lg font-semibold text-amber-800">
+                      Fare Data Unavailable
+                    </div>
+                    <p className="text-xs text-slate-500">
+                      Google Routes API did not publish transit ticket pricing for this corridor.
+                    </p>
+                  </>
+                )}
               </div>
-              <div className="text-lg font-semibold text-amber-800">
-                {FARE_UNAVAILABLE_TEXT}
-              </div>
-              <p className="text-xs text-slate-500">
-                Google Routes API does not publish confirmed cab, train, or bus fares.
-              </p>
-            </div>
+            )}
           </div>
         )}
 
-        {/* Optional User-Entered Round-Trip Travel Estimate */}
-        <div className="bg-slate-50 border border-slate-200 rounded-md p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-          <div className="space-y-0.5">
-            <label
-              htmlFor="round-trip-fare-input"
-              className="text-sm font-medium text-slate-900 block"
-            >
-              Optional: Enter your estimated round-trip travel expense (INR)
-            </label>
-            <p className="text-xs text-slate-600">
-              Leave blank to keep as &ldquo;Fare unavailable&rdquo;. Any entered value is
-              clearly labeled as a user-entered estimate, not a confirmed fare.
-            </p>
-          </div>
-          <div className="flex items-center gap-2 shrink-0">
-            <span className="text-sm font-mono text-slate-500">₹</span>
-            <input
-              id="round-trip-fare-input"
-              type="number"
-              min={0}
-              step={50}
-              placeholder="e.g. 600"
-              value={journeyState.manualRoundTripFare}
-              onChange={(e) => onChangeManualRoundTripFare(e.target.value)}
-              className="w-36 h-10 px-3 text-sm font-mono tabular-nums bg-white border border-slate-300 rounded-md text-slate-900 focus:border-[#0F766E] focus:outline-none"
-            />
-          </div>
-        </div>
+        <p className="text-xs text-slate-500 border-t border-slate-100 pt-3">
+          Live ride fares are not estimated or retrieved by MedRoute. Click Check fare in Uber above to check actual ride pricing directly inside Uber.
+          {!uberCheck.hasConfiguredClientId
+            ? ' Optional: VITE_UBER_CLIENT_ID is not set, so Uber opens directly without a client_id.'
+            : ''}
+          {uberCheck.hasIncompleteDestinationAddress
+            ? ' Note: street address details for this provider are partial; Uber will use its exact coordinates and name.'
+            : ''}
+        </p>
       </div>
 
       {/* Step 8: Conditional Accommodation Discovery (ONLY when user answered Yes) */}
@@ -449,6 +621,31 @@ export function ProviderDetailsView({
               live booking inventory source.
             </p>
           </div>
+
+          {accUberMessage && (
+            <div
+              role="status"
+              className="bg-amber-50 border border-amber-200 rounded-md px-4 py-3 text-xs sm:text-sm text-amber-900 flex flex-col gap-1.5"
+            >
+              <div className="flex items-start gap-2">
+                <AlertCircle className="w-4 h-4 shrink-0 mt-0.5 text-amber-700" />
+                <span>{accUberMessage}</span>
+              </div>
+              {accUberFallbackUrl && (
+                <div className="pl-6">
+                  <a
+                    href={accUberFallbackUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center gap-1 font-medium text-[#0F2942] underline hover:text-[#0F766E]"
+                  >
+                    Open Uber directly
+                    <ExternalLink className="w-3.5 h-3.5" />
+                  </a>
+                </div>
+              )}
+            </div>
+          )}
 
           {journeyState.accommodationsError && (
             <DiagnosticAlert
@@ -483,6 +680,14 @@ export function ProviderDetailsView({
                   acc.maxNightlyPrice
                 );
 
+                const safeAccWebsite = sanitizeExternalUrl(acc.website);
+                const accMapsUrl = buildGoogleMapsPlaceUrl(
+                  acc.googleMapsUri,
+                  { latitude: acc.latitude, longitude: acc.longitude },
+                  acc.name
+                );
+                const telUri = sanitizeTelUri(acc.phoneNumber);
+
                 return (
                   <div
                     key={acc.accommodationId}
@@ -491,23 +696,6 @@ export function ProviderDetailsView({
                     }`}
                   >
                     <div className="space-y-1 min-w-0 flex-1">
-                      <div className="flex flex-wrap items-center gap-x-2 text-xs text-slate-500">
-                        <span className="font-medium text-slate-700">
-                          {acc.accommodationType}
-                        </span>
-                        <span aria-hidden="true">·</span>
-                        <span className="font-mono tabular-nums text-[#0F2942]">
-                          {formatDistanceKm(acc.distanceFromHospitalKm)} from hospital
-                        </span>
-                        <span aria-hidden="true">·</span>
-                        <span>
-                          {acc.dataOrigin === 'demo'
-                            ? 'Demo Data'
-                            : acc.dataOrigin === 'verified'
-                              ? 'Verified Record'
-                              : 'Live Places Listing'}
-                        </span>
-                      </div>
                       <h3 className="text-sm font-semibold text-slate-900">
                         {acc.name}
                       </h3>
@@ -516,6 +704,59 @@ export function ProviderDetailsView({
                         Source: {acc.priceSource} · Verified: {acc.lastVerified} ·
                         Room availability not confirmed
                       </p>
+                      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs pt-1">
+                        {safeAccWebsite ? (
+                          <a
+                            href={safeAccWebsite}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="inline-flex items-center gap-1 font-medium text-[#0F766E] hover:underline whitespace-nowrap"
+                          >
+                            Visit Website
+                            <ExternalLink className="w-3 h-3" />
+                          </a>
+                        ) : (
+                          <span className="text-slate-400">
+                            Website unavailable
+                          </span>
+                        )}
+                        {accMapsUrl && (
+                          <>
+                            <span aria-hidden="true" className="text-slate-300">
+                              ·
+                            </span>
+                            <a
+                              href={accMapsUrl}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="inline-flex items-center gap-1 font-medium text-[#0F2942] hover:underline whitespace-nowrap"
+                            >
+                              View on Google Maps
+                              <ExternalLink className="w-3 h-3" />
+                            </a>
+                          </>
+                        )}
+                        {!telUri && (
+                          <>
+                            <span aria-hidden="true" className="text-slate-300">
+                              ·
+                            </span>
+                            <span className="text-slate-400">
+                              Phone not available
+                            </span>
+                            {accMapsUrl && (
+                              <a
+                                href={accMapsUrl}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="font-medium text-[#0F766E] hover:underline whitespace-nowrap"
+                              >
+                                (Inquire on Maps)
+                              </a>
+                            )}
+                          </>
+                        )}
+                      </div>
                     </div>
 
                     <div className="flex flex-wrap sm:flex-nowrap items-center gap-4 shrink-0">
@@ -531,206 +772,53 @@ export function ProviderDetailsView({
                         </div>
                       </div>
 
-                      <button
-                        type="button"
-                        onClick={() =>
-                          onSelectAccommodation(
-                            isSelected ? null : acc.accommodationId
-                          )
-                        }
-                        className={`px-3.5 py-2 text-xs font-medium rounded-md border transition-colors whitespace-nowrap shrink-0 ${
-                          isSelected
-                            ? 'bg-[#0F766E] text-white border-[#0F766E]'
-                            : 'bg-white text-slate-800 border-slate-300 hover:bg-slate-50'
-                        }`}
-                      >
-                        {isSelected ? 'Selected' : 'Select Stay'}
-                      </button>
+                      <div className="flex flex-wrap sm:flex-nowrap items-center gap-2">
+                        {telUri && acc.phoneNumber && (
+                          <a
+                            href={telUri}
+                            className="inline-flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-medium rounded-md border border-slate-300 bg-white text-[#0F2942] hover:bg-slate-50 hover:border-slate-400 transition-colors whitespace-nowrap shrink-0"
+                            title={`Call ${acc.name} at ${acc.phoneNumber}`}
+                          >
+                            <Phone className="w-3.5 h-3.5 text-[#0F766E]" />
+                            <span>Call <span className="font-mono tabular-nums">{acc.phoneNumber}</span></span>
+                          </a>
+                        )}
+
+                        <button
+                          type="button"
+                          onClick={() => handleCheckFareToAccommodation(acc)}
+                          className="inline-flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-medium rounded-md border border-slate-300 bg-white text-[#0F2942] hover:bg-slate-50 hover:border-slate-400 transition-colors whitespace-nowrap shrink-0"
+                          title={`Check fare in Uber to ${acc.name}`}
+                        >
+                          <Car className="w-3.5 h-3.5 text-[#0F766E]" />
+                          Check fare in Uber
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() =>
+                            onSelectAccommodation(
+                              isSelected ? null : acc.accommodationId
+                            )
+                          }
+                          className={`px-3.5 py-2 text-xs font-medium rounded-md border transition-colors whitespace-nowrap shrink-0 ${
+                            isSelected
+                              ? 'bg-[#0F766E] text-white border-[#0F766E]'
+                              : 'bg-white text-slate-800 border-slate-300 hover:bg-slate-50'
+                          }`}
+                        >
+                          {isSelected ? 'Selected' : 'Select Stay'}
+                        </button>
+                      </div>
                     </div>
                   </div>
                 );
               })}
             </div>
           )}
-
-          {/* Local Commuting Expense (Calculated Separately) */}
-          <div className="bg-slate-50 border border-slate-200 rounded-md p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-            <div className="space-y-0.5">
-              <label
-                htmlFor="local-commute-input"
-                className="text-sm font-medium text-slate-900 block"
-              >
-                Local commuting expense (Accommodation ↔ Hospital, per day in INR)
-              </label>
-              <p className="text-xs text-slate-600">
-                Assumes 1 round-trip per stay day ({searchInput.nights}{' '}
-                {searchInput.nights === 1 ? 'day' : 'days'}). Leave blank to show
-                &ldquo;Fare unavailable&rdquo;.
-              </p>
-            </div>
-            <div className="flex items-center gap-2 shrink-0">
-              <span className="text-sm font-mono text-slate-500">₹/day</span>
-              <input
-                id="local-commute-input"
-                type="number"
-                min={0}
-                step={20}
-                placeholder="e.g. 160"
-                value={journeyState.manualDailyCommuteFare}
-                onChange={(e) => onChangeManualDailyCommuteFare(e.target.value)}
-                className="w-32 h-10 px-3 text-sm font-mono tabular-nums bg-white border border-slate-300 rounded-md text-slate-900 focus:border-[#0F766E] focus:outline-none"
-              />
-            </div>
-          </div>
         </div>
       )}
 
-      {/* Step 9: Total Journey Cost Estimation Ledger */}
-      <div className="bg-white border border-slate-200 rounded-lg overflow-hidden">
-        <div className="p-6 border-b border-slate-200 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-          <div>
-            <h2 className="text-lg font-semibold text-[#0F2942]">
-              Estimated Medical Journey Cost Breakdown
-            </h2>
-            <p className="text-xs text-slate-500">
-              Applies only the selected category charge ({costBreakdown.medicalChargeLabel}) — never combines consultation, diagnostics, and treatment automatically.
-            </p>
-          </div>
-          <span
-            className={`text-xs font-semibold whitespace-nowrap ${
-              costBreakdown.isComplete ? 'text-emerald-700' : 'text-amber-700'
-            }`}
-          >
-            {costBreakdown.isComplete
-              ? 'Complete Estimate'
-              : 'Incomplete Estimate'}
-          </span>
-        </div>
-
-        <div className="overflow-x-auto">
-          <table className="w-full text-left border-collapse text-sm">
-            <thead>
-              <tr className="bg-slate-50 border-b border-slate-200 text-xs text-slate-500">
-                <th className="py-3 px-6 font-medium">Cost Component</th>
-                <th className="py-3 px-6 font-medium">Source & Basis</th>
-                <th className="py-3 px-6 font-medium text-right">Amount (INR)</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-200">
-              <tr>
-                <td className="py-3.5 px-6 font-medium text-slate-900">
-                  {costBreakdown.medicalChargeLabel}
-                </td>
-                <td className="py-3.5 px-6 text-xs text-slate-600">
-                  {costBreakdown.medicalChargeAvailable
-                    ? `Published / Sample Charge · ${costBreakdown.medicalChargeSource} · Verified ${costBreakdown.medicalChargeVerified}`
-                    : 'No published medical charge available — not treated as ₹0'}
-                </td>
-                <td className="py-3.5 px-6 text-right font-mono tabular-nums font-semibold text-slate-900 whitespace-nowrap">
-                  {costBreakdown.medicalCharge
-                    ? formatINRRange(
-                        costBreakdown.medicalCharge.min,
-                        costBreakdown.medicalCharge.max
-                      )
-                    : UNAVAILABLE_TEXT}
-                </td>
-              </tr>
-
-              <tr>
-                <td className="py-3.5 px-6 font-medium text-slate-900">
-                  Estimated Round-Trip Travel Cost
-                </td>
-                <td className="py-3.5 px-6 text-xs text-slate-600">
-                  {costBreakdown.travelSourceLabel}
-                </td>
-                <td className="py-3.5 px-6 text-right font-mono tabular-nums font-semibold text-slate-900 whitespace-nowrap">
-                  {costBreakdown.travelRoundTrip
-                    ? formatINRRange(
-                        costBreakdown.travelRoundTrip.min,
-                        costBreakdown.travelRoundTrip.max
-                      )
-                    : FARE_UNAVAILABLE_TEXT}
-                </td>
-              </tr>
-
-              {costBreakdown.accommodationIncluded && (
-                <>
-                  <tr>
-                    <td className="py-3.5 px-6 font-medium text-slate-900">
-                      Accommodation Expense ({costBreakdown.nights}{' '}
-                      {costBreakdown.nights === 1 ? 'night' : 'nights'})
-                    </td>
-                    <td className="py-3.5 px-6 text-xs text-slate-600">
-                      {costBreakdown.accommodationName
-                        ? `${costBreakdown.accommodationName} · ${costBreakdown.accommodationSourceLabel}`
-                        : costBreakdown.accommodationSourceLabel}
-                    </td>
-                    <td className="py-3.5 px-6 text-right font-mono tabular-nums font-semibold text-slate-900 whitespace-nowrap">
-                      {costBreakdown.accommodationExpense
-                        ? formatINRRange(
-                            costBreakdown.accommodationExpense.min,
-                            costBreakdown.accommodationExpense.max
-                          )
-                        : UNAVAILABLE_TEXT}
-                    </td>
-                  </tr>
-
-                  <tr>
-                    <td className="py-3.5 px-6 font-medium text-slate-900">
-                      Local Commute Expense
-                    </td>
-                    <td className="py-3.5 px-6 text-xs text-slate-600">
-                      {costBreakdown.localCommuteAssumptions}
-                    </td>
-                    <td className="py-3.5 px-6 text-right font-mono tabular-nums font-semibold text-slate-900 whitespace-nowrap">
-                      {costBreakdown.localCommuteExpense
-                        ? formatINRRange(
-                            costBreakdown.localCommuteExpense.min,
-                            costBreakdown.localCommuteExpense.max
-                          )
-                        : FARE_UNAVAILABLE_TEXT}
-                    </td>
-                  </tr>
-                </>
-              )}
-            </tbody>
-            <tfoot>
-              <tr className="bg-slate-50 border-t-2 border-slate-200">
-                <td
-                  colSpan={2}
-                  className="py-4 px-6 font-semibold text-[#0F2942]"
-                >
-                  Total Estimated Journey Cost
-                </td>
-                <td className="py-4 px-6 text-right font-mono tabular-nums text-lg font-bold text-[#0F2942] whitespace-nowrap">
-                  {costBreakdown.isComplete && costBreakdown.totalRange
-                    ? formatINRRange(
-                        costBreakdown.totalRange.min,
-                        costBreakdown.totalRange.max
-                      )
-                    : 'Incomplete Estimate'}
-                </td>
-              </tr>
-            </tfoot>
-          </table>
-        </div>
-
-        <div className="p-5 bg-slate-50/70 border-t border-slate-200 space-y-2 text-xs text-slate-600">
-          {!costBreakdown.isComplete && (
-            <p className="text-amber-800 font-medium">
-              Missing required cost items:{' '}
-              {costBreakdown.missingComponents.join(', ')}. Missing amounts are
-              never substituted with zero.
-            </p>
-          )}
-          <p>
-            <strong>Important Notice:</strong> This is an estimated journey cost
-            for planning and comparison only—not a final hospital bill. It
-            excludes unknown prescribed medicines, diagnostic add-ons, and
-            unforeseen treatment expenses.
-          </p>
-        </div>
-      </div>
     </section>
   );
 }

@@ -19,28 +19,14 @@ function notifyQuotaIfNeeded(diagnostic?: MapsApiDiagnostic | null) {
   }
 }
 
-export interface MapsBackendStatus {
-  configured: boolean;
-  backendReachable: boolean;
-}
-
-export async function fetchMapsBackendStatus(): Promise<MapsBackendStatus> {
+export async function fetchMapsBackendStatus(): Promise<{ configured: boolean }> {
   try {
-    const res = await fetch('/api/maps/status', { cache: 'no-store' });
-    if (!res.ok) {
-      return { configured: false, backendReachable: false };
-    }
-    const contentType = res.headers.get('content-type') || '';
-    if (!contentType.includes('application/json')) {
-      return { configured: false, backendReachable: false };
-    }
-    const data = await res.json().catch(() => null);
-    if (!data || typeof data.configured !== 'boolean') {
-      return { configured: false, backendReachable: false };
-    }
-    return { configured: data.configured, backendReachable: true };
+    const res = await fetch('/api/maps/status');
+    if (!res.ok) return { configured: false };
+    const data = await res.json();
+    return { configured: Boolean(data?.configured) };
   } catch {
-    return { configured: false, backendReachable: false };
+    return { configured: false };
   }
 }
 
@@ -171,7 +157,9 @@ export interface LivePlaceAccommodationItem {
   address: string;
   latitude: number;
   longitude: number;
+  website: string | null;
   googleMapsUri: string | null;
+  phoneNumber?: string | null;
 }
 
 export async function searchLiveAccommodationsViaBackend(params: {
@@ -267,6 +255,8 @@ export async function computeLiveRoutesViaBackend(params: {
           distanceKm,
           durationSeconds: raw.durationSeconds ?? null,
           durationText: formatDurationSeconds(raw.durationSeconds),
+          transitFare: raw.transitFare ?? null,
+          tollInfo: raw.tollInfo ?? null,
           source: 'google_routes',
         };
       } else {
@@ -277,6 +267,8 @@ export async function computeLiveRoutesViaBackend(params: {
           distanceKm: null,
           durationSeconds: null,
           durationText: UNAVAILABLE_TEXT,
+          transitFare: null,
+          tollInfo: null,
           source: 'google_routes',
           errorMessage: raw?.diagnostic?.userMessage || 'Route unavailable for this travel mode',
         };

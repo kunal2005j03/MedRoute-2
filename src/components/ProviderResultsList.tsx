@@ -3,9 +3,8 @@ import {
   Check,
   ChevronDown,
   MapPin,
+  Phone,
   Plus,
-  ShieldCheck,
-  AlertTriangle,
 } from 'lucide-react';
 import type {
   AppMode,
@@ -15,11 +14,17 @@ import type {
   MedicalService,
 } from '../types/medroute';
 import {
+  buildGoogleMapsPlaceUrl,
   formatDistanceKm,
   formatINRRange,
+  sanitizeExternalUrl,
+  sanitizeTelUri,
   UNAVAILABLE_TEXT,
 } from '../utils/safety';
-import { extractMedicalChargeRange } from '../utils/costEngine';
+import {
+  extractMedicalChargeRange,
+  getMedicalChargeConfidenceLabel,
+} from '../utils/costEngine';
 import { DiagnosticAlert } from './DiagnosticAlert';
 
 interface ProviderResultsListProps {
@@ -193,14 +198,15 @@ export function ProviderResultsList({
               const { provider, serviceVerification, charge, straightLineDistanceKm } =
                 item;
               const chargeRange = extractMedicalChargeRange(charge);
+              const chargeConfidenceLabel = getMedicalChargeConfidenceLabel(charge);
+              const safeChargeUrl = sanitizeExternalUrl(charge?.sourceUrl);
               const isCompared = comparedIds.includes(provider.providerId);
-
-              const verificationLabel =
-                serviceVerification === 'verified'
-                  ? 'Verified Service'
-                  : serviceVerification === 'demo'
-                    ? 'Demo Data (Sample)'
-                    : 'Unverified Listing (Google Places)';
+              const providerMapsUrl = buildGoogleMapsPlaceUrl(
+                provider.googleMapsUri,
+                { latitude: provider.latitude, longitude: provider.longitude },
+                provider.name
+              );
+              const telUri = sanitizeTelUri(provider.phone);
 
               return (
                 <article
@@ -208,41 +214,7 @@ export function ProviderResultsList({
                   className="p-5 hover:bg-slate-50/60 transition-colors flex flex-col lg:flex-row lg:items-center justify-between gap-5"
                 >
                   <div className="space-y-2 min-w-0 flex-1">
-                    {/* Clean Unboxed Metadata Line (Zero-Pill Discipline) */}
-                    <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
-                      <span className="font-mono font-semibold text-slate-500 tabular-nums">
-                        #{idx + 1}
-                      </span>
-                      <span aria-hidden="true" className="text-slate-300">
-                        ·
-                      </span>
-                      <span
-                        className={`inline-flex items-center gap-1 font-medium ${
-                          serviceVerification === 'verified'
-                            ? 'text-emerald-700'
-                            : serviceVerification === 'demo'
-                              ? 'text-[#0F766E]'
-                              : 'text-amber-700'
-                        }`}
-                      >
-                        {serviceVerification === 'unverified' ? (
-                          <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
-                        ) : (
-                          <ShieldCheck className="w-3.5 h-3.5 shrink-0" />
-                        )}
-                        {verificationLabel}
-                      </span>
-                      <span aria-hidden="true" className="text-slate-300">
-                        ·
-                      </span>
-                      <span className="text-slate-600">{provider.providerType}</span>
-                      <span aria-hidden="true" className="text-slate-300">
-                        ·
-                      </span>
-                      <span className="font-mono font-medium text-[#0F2942] tabular-nums">
-                        {formatDistanceKm(straightLineDistanceKm)} straight-line
-                      </span>
-                    </div>
+
 
                     <h2 className="text-lg font-semibold text-slate-900 leading-snug">
                       {provider.name}
@@ -252,9 +224,9 @@ export function ProviderResultsList({
                       {provider.address}
                     </p>
 
-                    <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-slate-500 pt-0.5">
+                    <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-slate-500 pt-0.5">
                       <span>
-                        Published charge:{' '}
+                        {charge ? `${chargeConfidenceLabel}: ` : 'Published charge: '}
                         <strong className="font-mono tabular-nums text-slate-900">
                           {chargeRange
                             ? formatINRRange(chargeRange.min, chargeRange.max)
@@ -265,7 +237,19 @@ export function ProviderResultsList({
                         ·
                       </span>
                       <span>
-                        Source: {charge?.sourceName || item.serviceSource}
+                        Source:{' '}
+                        {safeChargeUrl ? (
+                          <a
+                            href={safeChargeUrl}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-[#0F766E] hover:underline"
+                          >
+                            {charge?.sourceName || item.serviceSource}
+                          </a>
+                        ) : (
+                          charge?.sourceName || item.serviceSource
+                        )}
                       </span>
                       <span aria-hidden="true" className="text-slate-300">
                         ·
@@ -273,10 +257,30 @@ export function ProviderResultsList({
                       <span>
                         Verified: {charge?.lastVerified || item.serviceLastVerified}
                       </span>
+                      {!telUri && (
+                        <>
+                          <span aria-hidden="true" className="text-slate-300">
+                            ·
+                          </span>
+                          <span className="text-slate-400">
+                            Phone not available
+                          </span>
+                          {providerMapsUrl && (
+                            <a
+                              href={providerMapsUrl}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="font-medium text-[#0F766E] hover:underline whitespace-nowrap"
+                            >
+                              (Inquire on Maps)
+                            </a>
+                          )}
+                        </>
+                      )}
                     </div>
 
                     {serviceVerification === 'unverified' && (
-                      <p className="text-xs text-amber-800">
+                      <p className="text-xs text-slate-500">
                         Live Google Places listing: please confirm directly with
                         this facility that {selectedService?.serviceName || 'this service'} is
                         available.
@@ -286,6 +290,17 @@ export function ProviderResultsList({
 
                   {/* Action Controls */}
                   <div className="flex flex-wrap sm:flex-nowrap items-center gap-2.5 shrink-0">
+                    {telUri && provider.phone && (
+                      <a
+                        href={telUri}
+                        className="inline-flex items-center justify-center gap-1.5 px-3.5 py-2 text-xs sm:text-sm font-medium rounded-md border border-slate-300 bg-white text-[#0F2942] hover:bg-slate-50 hover:border-slate-400 transition-colors whitespace-nowrap shrink-0"
+                        title={`Call ${provider.name} at ${provider.phone}`}
+                      >
+                        <Phone className="w-4 h-4 text-[#0F766E]" />
+                        <span>Call <span className="font-mono tabular-nums">{provider.phone}</span></span>
+                      </a>
+                    )}
+
                     <button
                       type="button"
                       onClick={() => onToggleCompare(provider.providerId)}

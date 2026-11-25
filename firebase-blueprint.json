@@ -51,7 +51,7 @@
     },
     "MedicalCharge": {
       "title": "MedicalCharge",
-      "description": "Published or illustrative medical service charge for a provider and service pair.",
+      "description": "Verified or illustrative medical service charge for a provider and service pair.",
       "type": "object",
       "properties": {
         "chargeId": { "type": "string", "minLength": 2, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
@@ -60,9 +60,10 @@
         "amount": { "type": "number" },
         "minAmount": { "type": "number" },
         "maxAmount": { "type": "number" },
-        "chargeType": { "type": "string", "enum": ["consultation_fee", "diagnostic_price", "treatment_package", "per_session"] },
+        "chargeType": { "type": "string", "enum": ["consultation_fee", "diagnostic_price", "treatment_package", "per_session", "per_consultation", "per_test", "per_procedure"] },
+        "includesNote": { "type": "string", "maxLength": 280 },
         "sourceName": { "type": "string", "minLength": 2, "maxLength": 160 },
-        "sourceUrl": { "type": "string", "maxLength": 240 },
+        "sourceUrl": { "type": "string", "maxLength": 500 },
         "lastVerified": { "type": "string", "minLength": 4, "maxLength": 40 },
         "verificationStatus": { "type": "string", "enum": ["verified", "demo", "unverified"] },
         "dataOrigin": { "type": "string", "enum": ["verified", "demo"] }
@@ -105,7 +106,7 @@
     },
     "/medicalCharges/{chargeId}": {
       "schema": { "$ref": "#/entities/MedicalCharge" },
-      "description": "Published or illustrative medical service charges."
+      "description": "Verified or illustrative medical service charges."
     },
     "/accommodations/{accommodationId}": {
       "schema": { "$ref": "#/entities/Accommodation" },

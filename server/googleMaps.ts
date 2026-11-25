@@ -1,20 +1,43 @@
-import type { MapsApiDiagnostic, TravelMode } from '../src/types/medroute';
+import type {
+  MapsApiDiagnostic,
+  MoneyAmount,
+  TollEstimateInfo,
+  TravelMode,
+} from '../src/types/medroute.ts';
 
 const SOLUTION_ID = 'gmp_mcp_codeassist_v1_aistudio';
 
+let lastWorkingServerKey: string | null = null;
+
 /**
- * Reads the single server-side Google Maps API key exclusively from process.env.GOOGLE_MAPS_API_KEY.
- * Never reads VITE_GOOGLE_MAPS_API_KEY and never exposes the key to frontend code.
+ * Collects unique server-side Google Maps API keys without ever exposing them to the client.
+ * Checks GOOGLE_MAPS_API_KEY and VITE_GOOGLE_MAPS_API_KEY (injected by AI Studio provisioning).
+ * If a key previously succeeded in this server process, it is prioritized first to avoid wasted retries.
  */
+export function getServerGoogleMapsApiKeys(): string[] {
+  const rawCandidates = [
+    process.env.GOOGLE_MAPS_API_KEY?.trim() || '',
+    process.env.VITE_GOOGLE_MAPS_API_KEY?.trim() || '',
+  ].filter((k) => k.length > 0);
+
+  const unique = Array.from(new Set(rawCandidates));
+  if (lastWorkingServerKey && unique.includes(lastWorkingServerKey)) {
+    return [
+      lastWorkingServerKey,
+      ...unique.filter((k) => k !== lastWorkingServerKey),
+    ];
+  }
+  return unique;
+}
+
 export function getServerGoogleMapsApiKey(): string | null {
-  const key = process.env.GOOGLE_MAPS_API_KEY?.trim() || '';
-  return key.length > 0 ? key : null;
+  return getServerGoogleMapsApiKeys()[0] || null;
 }
 
 export function sanitizeSecretFromText(text: string): string {
-  const key = getServerGoogleMapsApiKey();
+  const keys = getServerGoogleMapsApiKeys();
   let safe = text.replace(/AIza[0-9A-Za-z\-_]{20,}/g, '[REDACTED_API_KEY]');
-  if (key) {
+  for (const key of keys) {
     safe = safe.split(key).join('[REDACTED_API_KEY]');
   }
   return safe;
@@ -125,12 +148,7 @@ export function classifyGoogleApiError(params: {
     };
   }
 
-  if (
-    httpStatus === 401 ||
-    httpStatus === 403 ||
-    combined.includes('permission_denied') ||
-    combined.includes('request_denied')
-  ) {
+  if (httpStatus === 401 || httpStatus === 403 || combined.includes('permission_denied') || combined.includes('request_denied')) {
     return {
       category: 'AUTH_FAILURE',
       httpStatus,
@@ -150,13 +168,7 @@ export function classifyGoogleApiError(params: {
 }
 
 export function getAppRefererHeader(requestReferer?: string | null): string | null {
-  const vercelOrigin = process.env.VERCEL_URL?.trim()
-    ? process.env.VERCEL_URL.trim().startsWith('http')
-      ? process.env.VERCEL_URL.trim()
-      : `https://${process.env.VERCEL_URL.trim()}`
-    : null;
-
-  const candidates = [requestReferer, process.env.APP_URL, vercelOrigin];
+  const candidates = [requestReferer, process.env.APP_URL];
   for (const raw of candidates) {
     if (typeof raw !== 'string') continue;
     const trimmed = raw.trim();
@@ -195,6 +207,56 @@ function buildGoogleHeaders(
   return headers;
 }
 
+function isKeyAuthErrorStatus(status: number, data: any): boolean {
+  if (status === 401 || status === 403) return true;
+  const meta = extractGoogleErrorMeta(data);
+  const combined = `${meta.googleStatus || ''} ${meta.errorReason || ''} ${meta.rawMessage || ''}`.toLowerCase();
+  return (
+    combined.includes('permission_denied') ||
+    combined.includes('request_denied') ||
+    combined.includes('api_key_invalid') ||
+    combined.includes('billing') ||
+    combined.includes('service_disabled') ||
+    combined.includes('service_blocked') ||
+    combined.includes('referer') ||
+    combined.includes('referrer')
+  );
+}
+
+async function fetchGoogleJsonWithKeyFallback(params: {
+  url: string;
+  method: 'GET' | 'POST';
+  extraHeaders: Record<string, string>;
+  body?: string;
+  requestReferer?: string | null;
+}): Promise<{ response: Response; data: any }> {
+  const keys = getServerGoogleMapsApiKeys();
+  let lastResult: { response: Response; data: any } | null = null;
+
+  for (let i = 0; i < keys.length; i += 1) {
+    const key = keys[i];
+    const response = await fetch(params.url, {
+      method: params.method,
+      headers: buildGoogleHeaders(key, params.extraHeaders, params.requestReferer),
+      body: params.body,
+    });
+    const data = await response.json().catch(() => null);
+    lastResult = { response, data };
+
+    if (response.ok) {
+      lastWorkingServerKey = key;
+      return lastResult;
+    }
+
+    // Only retry with an alternate server key if this looks like an auth/billing/key error
+    if (!isKeyAuthErrorStatus(response.status, data)) {
+      return lastResult;
+    }
+  }
+
+  return lastResult!;
+}
+
 function extractGoogleErrorMeta(payload: any): {
   googleStatus: string | null;
   rawMessage: string | null;
@@ -211,12 +273,7 @@ function extractGoogleErrorMeta(payload: any): {
     const detailSummary = details
       .map((d: any) => {
         if (!d || typeof d !== 'object') return '';
-        const parts = [
-          d.reason,
-          d.domain,
-          d.message,
-          d.metadata ? JSON.stringify(d.metadata) : '',
-        ].filter(Boolean);
+        const parts = [d.reason, d.domain, d.message, d.metadata ? JSON.stringify(d.metadata) : ''].filter(Boolean);
         return parts.join(' ');
       })
       .filter(Boolean)
@@ -231,11 +288,7 @@ function extractGoogleErrorMeta(payload: any): {
   }
 
   // Geocoding classic envelope: { status: "REQUEST_DENIED", error_message: "..." }
-  if (
-    typeof payload.status === 'string' &&
-    payload.status !== 'OK' &&
-    payload.status !== 'ZERO_RESULTS'
-  ) {
+  if (typeof payload.status === 'string' && payload.status !== 'OK' && payload.status !== 'ZERO_RESULTS') {
     return {
       googleStatus: payload.status,
       rawMessage: typeof payload.error_message === 'string' ? payload.error_message : null,
@@ -252,7 +305,7 @@ export function missingKeyDiagnostic(apiName: string): MapsApiDiagnostic {
     httpStatus: 503,
     googleStatus: null,
     userMessage: `GOOGLE_MAPS_API_KEY is not configured on the server for ${apiName}. Configure the secret or switch to Demo Mode.`,
-    details: 'Set GOOGLE_MAPS_API_KEY in server environment variables and redeploy.',
+    details: 'Set GOOGLE_MAPS_API_KEY in server environment secrets.',
   };
 }
 
@@ -325,19 +378,15 @@ export async function geocodeAddressOnServer(params: {
       ? `https://geocode.googleapis.com/v4/geocode/address/${encodeURIComponent(params.address!.trim().slice(0, 200))}?regionCode=IN&languageCode=en`
       : `https://geocode.googleapis.com/v4/geocode/location/${params.latitude},${params.longitude}?languageCode=en`;
 
-    const response = await fetch(v4Url, {
+    const { response, data } = await fetchGoogleJsonWithKeyFallback({
+      url: v4Url,
       method: 'GET',
-      headers: buildGoogleHeaders(
-        apiKey,
-        {
-          'X-Goog-FieldMask':
-            'results.placeId,results.location,results.formattedAddress,results.addressComponents',
-        },
-        params.requestReferer
-      ),
+      extraHeaders: {
+        'X-Goog-FieldMask':
+          'results.placeId,results.location,results.formattedAddress,results.addressComponents',
+      },
+      requestReferer: params.requestReferer,
     });
-
-    const data = await response.json().catch(() => null);
 
     if (response.ok && data && typeof data === 'object') {
       const results = Array.isArray(data.results) ? data.results : [];
@@ -373,8 +422,7 @@ export async function geocodeAddressOnServer(params: {
       return {
         ok: true,
         result: {
-          label:
-            params.address?.trim() || city || formattedAddress.split(',')[0] || formattedAddress,
+          label: params.address?.trim() || city || formattedAddress.split(',')[0] || formattedAddress,
           formattedAddress,
           city,
           state,
@@ -394,8 +442,8 @@ export async function geocodeAddressOnServer(params: {
       apiName: 'Geocoding API',
     });
 
-    // If forward geocoding failed because Geocoding API is not enabled/restricted on the key,
-    // fall back to Places API (New) Text Search to resolve the Indian address/PIN.
+    // If forward geocoding failed solely because Geocoding API is not enabled/billed on this starter key,
+    // use Places API (New) Text Search (already enabled on starter keys) to resolve the Indian address/PIN.
     const canFallbackToPlaces =
       isForward &&
       (primaryDiagnostic.category === 'API_NOT_ENABLED' ||
@@ -412,41 +460,23 @@ export async function geocodeAddressOnServer(params: {
       ? cleanedAddress
       : `${cleanedAddress}, India`;
 
-    const placesRes = await fetch('https://places.googleapis.com/v1/places:searchText', {
+    const { response: placesRes, data: placesData } = await fetchGoogleJsonWithKeyFallback({
+      url: 'https://places.googleapis.com/v1/places:searchText',
       method: 'POST',
-      headers: buildGoogleHeaders(
-        apiKey,
-        {
-          'Content-Type': 'application/json',
-          'X-Goog-FieldMask':
-            'places.displayName,places.formattedAddress,places.location,places.addressComponents',
-        },
-        params.requestReferer
-      ),
+      extraHeaders: {
+        'Content-Type': 'application/json',
+        'X-Goog-FieldMask':
+          'places.displayName,places.formattedAddress,places.location,places.addressComponents',
+      },
       body: JSON.stringify({
         textQuery: placesQuery,
         pageSize: 1,
         languageCode: 'en',
         regionCode: 'IN',
       }),
+      requestReferer: params.requestReferer,
     });
-
-    const placesData = await placesRes.json().catch(() => null);
     if (!placesRes.ok || !placesData || typeof placesData !== 'object') {
-      const fallbackMeta = extractGoogleErrorMeta(placesData);
-      if (fallbackMeta.rawMessage && fallbackMeta.rawMessage !== primaryDiagnostic.details) {
-        return {
-          ok: false,
-          diagnostic: {
-            ...primaryDiagnostic,
-            details: sanitizeSecretFromText(
-              [primaryDiagnostic.details, `Places fallback: ${fallbackMeta.rawMessage}`]
-                .filter(Boolean)
-                .join(' | ')
-            ),
-          },
-        };
-      }
       return { ok: false, diagnostic: primaryDiagnostic };
     }
 
@@ -585,20 +615,16 @@ export async function searchProvidersPlacesOnServer(params: {
   ].join(',');
 
   try {
-    const response = await fetch('https://places.googleapis.com/v1/places:searchText', {
+    const { response, data } = await fetchGoogleJsonWithKeyFallback({
+      url: 'https://places.googleapis.com/v1/places:searchText',
       method: 'POST',
-      headers: buildGoogleHeaders(
-        apiKey,
-        {
-          'Content-Type': 'application/json',
-          'X-Goog-FieldMask': fieldMask,
-        },
-        params.requestReferer
-      ),
+      extraHeaders: {
+        'Content-Type': 'application/json',
+        'X-Goog-FieldMask': fieldMask,
+      },
       body: JSON.stringify(body),
+      requestReferer: params.requestReferer,
     });
-
-    const data = await response.json().catch(() => null);
 
     if (!response.ok) {
       const meta = extractGoogleErrorMeta(data);
@@ -631,11 +657,7 @@ export async function searchProvidersPlacesOnServer(params: {
       .filter((p: any) => {
         const lat = p?.location?.latitude;
         const lng = p?.location?.longitude;
-        return (
-          typeof p?.id === 'string' &&
-          typeof p?.displayName?.text === 'string' &&
-          isValidLatLng(lat, lng)
-        );
+        return typeof p?.id === 'string' && typeof p?.displayName?.text === 'string' && isValidLatLng(lat, lng);
       })
       .map((p: any) => ({
         placeId: String(p.id),
@@ -690,7 +712,9 @@ export async function searchAccommodationsPlacesOnServer(params: {
     address: string;
     latitude: number;
     longitude: number;
+    website: string | null;
     googleMapsUri: string | null;
+    phoneNumber: string | null;
   }>;
   diagnostic?: MapsApiDiagnostic;
 }> {
@@ -734,24 +758,23 @@ export async function searchAccommodationsPlacesOnServer(params: {
     'places.formattedAddress',
     'places.location',
     'places.primaryTypeDisplayName',
+    'places.websiteUri',
     'places.googleMapsUri',
+    'places.nationalPhoneNumber',
+    'places.internationalPhoneNumber',
   ].join(',');
 
   try {
-    const response = await fetch('https://places.googleapis.com/v1/places:searchNearby', {
+    const { response, data } = await fetchGoogleJsonWithKeyFallback({
+      url: 'https://places.googleapis.com/v1/places:searchNearby',
       method: 'POST',
-      headers: buildGoogleHeaders(
-        apiKey,
-        {
-          'Content-Type': 'application/json',
-          'X-Goog-FieldMask': fieldMask,
-        },
-        params.requestReferer
-      ),
+      extraHeaders: {
+        'Content-Type': 'application/json',
+        'X-Goog-FieldMask': fieldMask,
+      },
       body: JSON.stringify(body),
+      requestReferer: params.requestReferer,
     });
-
-    const data = await response.json().catch(() => null);
 
     if (!response.ok) {
       const meta = extractGoogleErrorMeta(data);
@@ -772,11 +795,7 @@ export async function searchAccommodationsPlacesOnServer(params: {
       .filter((p: any) => {
         const lat = p?.location?.latitude;
         const lng = p?.location?.longitude;
-        return (
-          typeof p?.id === 'string' &&
-          typeof p?.displayName?.text === 'string' &&
-          isValidLatLng(lat, lng)
-        );
+        return typeof p?.id === 'string' && typeof p?.displayName?.text === 'string' && isValidLatLng(lat, lng);
       })
       .map((p: any) => ({
         placeId: String(p.id),
@@ -789,7 +808,14 @@ export async function searchAccommodationsPlacesOnServer(params: {
           typeof p.formattedAddress === 'string' ? p.formattedAddress : 'Information unavailable',
         latitude: Number(p.location.latitude),
         longitude: Number(p.location.longitude),
+        website: typeof p.websiteUri === 'string' ? p.websiteUri : null,
         googleMapsUri: typeof p.googleMapsUri === 'string' ? p.googleMapsUri : null,
+        phoneNumber:
+          typeof p.nationalPhoneNumber === 'string' && p.nationalPhoneNumber.trim()
+            ? p.nationalPhoneNumber.trim()
+            : typeof p.internationalPhoneNumber === 'string' && p.internationalPhoneNumber.trim()
+              ? p.internationalPhoneNumber.trim()
+              : null,
       }));
 
     return { ok: true, places: normalized };
@@ -815,6 +841,47 @@ function parseDurationStringSeconds(durationStr: unknown): number | null {
   return Number.isFinite(secs) && secs >= 0 ? Math.round(secs) : null;
 }
 
+function parseGoogleMoney(raw: any, localizedText?: unknown): MoneyAmount | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const currencyCode =
+    typeof raw.currencyCode === 'string' && raw.currencyCode.trim()
+      ? raw.currencyCode.trim().toUpperCase()
+      : '';
+  const units = raw.units !== undefined ? Number(raw.units) : 0;
+  const nanos = raw.nanos !== undefined ? Number(raw.nanos) : 0;
+  if (!currencyCode || !Number.isFinite(units) || !Number.isFinite(nanos)) {
+    return null;
+  }
+  const amount = units + nanos / 1_000_000_000;
+  if (!Number.isFinite(amount) || amount <= 0) {
+    return null;
+  }
+  const formattedText =
+    typeof localizedText === 'string' && localizedText.trim()
+      ? localizedText.trim()
+      : `${currencyCode} ${Math.round(amount * 100) / 100}`;
+  return {
+    amount,
+    currencyCode,
+    formattedText,
+  };
+}
+
+function parseTollInfo(rawTollInfo: any): TollEstimateInfo | null {
+  if (!rawTollInfo || typeof rawTollInfo !== 'object') return null;
+  const rawList = Array.isArray(rawTollInfo.estimatedPrice)
+    ? rawTollInfo.estimatedPrice
+    : [];
+  const estimatedPrices: MoneyAmount[] = rawList
+    .map((m: any) => parseGoogleMoney(m))
+    .filter((m: MoneyAmount | null): m is MoneyAmount => m !== null);
+  if (estimatedPrices.length === 0) return null;
+  return {
+    hasTolls: true,
+    estimatedPrices,
+  };
+}
+
 export async function computeSingleRouteOnServer(params: {
   originLat: number;
   originLng: number;
@@ -827,6 +894,8 @@ export async function computeSingleRouteOnServer(params: {
   supported: boolean;
   distanceMeters: number | null;
   durationSeconds: number | null;
+  transitFare: MoneyAmount | null;
+  tollInfo: TollEstimateInfo | null;
   diagnostic?: MapsApiDiagnostic;
 }> {
   const apiKey = getServerGoogleMapsApiKey();
@@ -836,6 +905,8 @@ export async function computeSingleRouteOnServer(params: {
       supported: false,
       distanceMeters: null,
       durationSeconds: null,
+      transitFare: null,
+      tollInfo: null,
       diagnostic: missingKeyDiagnostic('Routes API'),
     };
   }
@@ -849,6 +920,8 @@ export async function computeSingleRouteOnServer(params: {
       supported: false,
       distanceMeters: null,
       durationSeconds: null,
+      transitFare: null,
+      tollInfo: null,
       diagnostic: {
         category: 'INCORRECT_REQUEST',
         httpStatus: 400,
@@ -858,49 +931,78 @@ export async function computeSingleRouteOnServer(params: {
     };
   }
 
-  const body: Record<string, unknown> = {
-    origin: {
-      location: {
-        latLng: {
-          latitude: params.originLat,
-          longitude: params.originLng,
+  const buildBody = (includeTolls: boolean): Record<string, unknown> => {
+    const reqBody: Record<string, unknown> = {
+      origin: {
+        location: {
+          latLng: {
+            latitude: params.originLat,
+            longitude: params.originLng,
+          },
         },
       },
-    },
-    destination: {
-      location: {
-        latLng: {
-          latitude: params.destLat,
-          longitude: params.destLng,
+      destination: {
+        location: {
+          latLng: {
+            latitude: params.destLat,
+            longitude: params.destLng,
+          },
         },
       },
-    },
-    travelMode: params.travelMode,
-    computeAlternativeRoutes: false,
-    languageCode: 'en-IN',
-    units: 'METRIC',
+      travelMode: params.travelMode,
+      computeAlternativeRoutes: false,
+      languageCode: 'en-IN',
+      units: 'METRIC',
+    };
+
+    if (params.travelMode === 'DRIVE' || params.travelMode === 'TWO_WHEELER') {
+      reqBody.routingPreference = 'TRAFFIC_AWARE';
+      if (includeTolls && params.travelMode === 'DRIVE') {
+        reqBody.extraComputations = ['TOLLS'];
+      }
+    }
+
+    return reqBody;
   };
 
-  // routingPreference is only accepted for DRIVE and TWO_WHEELER
-  if (params.travelMode === 'DRIVE' || params.travelMode === 'TWO_WHEELER') {
-    body.routingPreference = 'TRAFFIC_AWARE';
-  }
+  const getFieldMask = (includeTolls: boolean): string => {
+    if (params.travelMode === 'TRANSIT') {
+      return 'routes.distanceMeters,routes.duration,routes.travelAdvisory.transitFare,routes.localizedValues.transitFare';
+    }
+    if (includeTolls && params.travelMode === 'DRIVE') {
+      return 'routes.distanceMeters,routes.duration,routes.travelAdvisory.tollInfo';
+    }
+    return 'routes.distanceMeters,routes.duration';
+  };
 
   try {
-    const response = await fetch('https://routes.googleapis.com/directions/v2:computeRoutes', {
+    const attemptTolls = params.travelMode === 'DRIVE';
+    let { response, data } = await fetchGoogleJsonWithKeyFallback({
+      url: 'https://routes.googleapis.com/directions/v2:computeRoutes',
       method: 'POST',
-      headers: buildGoogleHeaders(
-        apiKey,
-        {
-          'Content-Type': 'application/json',
-          'X-Goog-FieldMask': 'routes.distanceMeters,routes.duration',
-        },
-        params.requestReferer
-      ),
-      body: JSON.stringify(body),
+      extraHeaders: {
+        'Content-Type': 'application/json',
+        'X-Goog-FieldMask': getFieldMask(attemptTolls),
+      },
+      body: JSON.stringify(buildBody(attemptTolls)),
+      requestReferer: params.requestReferer,
     });
 
-    const data = await response.json().catch(() => null);
+    // If TOLLS computation is unsupported on the project/region/route, transparently retry without TOLLS
+    if (!response.ok && attemptTolls && (response.status === 400 || response.status === 403)) {
+      const retry = await fetchGoogleJsonWithKeyFallback({
+        url: 'https://routes.googleapis.com/directions/v2:computeRoutes',
+        method: 'POST',
+        extraHeaders: {
+          'Content-Type': 'application/json',
+          'X-Goog-FieldMask': getFieldMask(false),
+        },
+        body: JSON.stringify(buildBody(false)),
+        requestReferer: params.requestReferer,
+      });
+      response = retry.response;
+      data = retry.data;
+    }
 
     if (!response.ok) {
       const meta = extractGoogleErrorMeta(data);
@@ -909,6 +1011,8 @@ export async function computeSingleRouteOnServer(params: {
         supported: false,
         distanceMeters: null,
         durationSeconds: null,
+        transitFare: null,
+        tollInfo: null,
         diagnostic: classifyGoogleApiError({
           httpStatus: response.status,
           googleStatus: meta.googleStatus,
@@ -921,12 +1025,13 @@ export async function computeSingleRouteOnServer(params: {
 
     const routes = Array.isArray(data?.routes) ? data.routes : [];
     if (routes.length === 0) {
-      // Valid response when a travel mode (e.g., TRANSIT or WALK across cities) has no supported route
       return {
         ok: true,
         supported: false,
         distanceMeters: null,
         durationSeconds: null,
+        transitFare: null,
+        tollInfo: null,
       };
     }
 
@@ -936,6 +1041,17 @@ export async function computeSingleRouteOnServer(params: {
         ? primary.distanceMeters
         : null;
     const durationSeconds = parseDurationStringSeconds(primary?.duration);
+    const transitFare =
+      params.travelMode === 'TRANSIT'
+        ? parseGoogleMoney(
+            primary?.travelAdvisory?.transitFare,
+            primary?.localizedValues?.transitFare?.text
+          )
+        : null;
+    const tollInfo =
+      params.travelMode === 'DRIVE'
+        ? parseTollInfo(primary?.travelAdvisory?.tollInfo)
+        : null;
 
     if (distanceMeters === null && durationSeconds === null) {
       return {
@@ -943,6 +1059,8 @@ export async function computeSingleRouteOnServer(params: {
         supported: false,
         distanceMeters: null,
         durationSeconds: null,
+        transitFare: null,
+        tollInfo: null,
         diagnostic: {
           category: 'INCOMPLETE_RESPONSE',
           httpStatus: response.status,
@@ -957,6 +1075,8 @@ export async function computeSingleRouteOnServer(params: {
       supported: true,
       distanceMeters,
       durationSeconds,
+      transitFare,
+      tollInfo,
     };
   } catch (err) {
     return {
@@ -964,6 +1084,8 @@ export async function computeSingleRouteOnServer(params: {
       supported: false,
       distanceMeters: null,
       durationSeconds: null,
+      transitFare: null,
+      tollInfo: null,
       diagnostic: {
         category: 'NETWORK_FAILURE',
         httpStatus: null,

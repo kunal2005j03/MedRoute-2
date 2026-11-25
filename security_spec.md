@@ -4,7 +4,8 @@
 
 1. **Default Deny**: Any path not explicitly matched under `/databases/{database}/documents` is denied for both reads and writes.
 2. **Public Directory Read Only**: `providers`, `services`, `providerServices`, `medicalCharges`, and `accommodations` contain non-PII public directory catalog records. Public reads require valid document IDs (`isValidId`) on single-document `get` and valid `dataOrigin` / `category` invariants on `list`.
-3. **Verified Admin Writes Only**: All `create`, `update`, and `delete` operations require a verified Google account matching the bootstrapped project owner (`mail2kunaln@gmail.com`, `email_verified == true`) or an entry in `/admins/{uid}`.
+3. **Verified Admin Writes Only**:
+   - All catalog writes (`providers`, `services`, `providerServices`, `medicalCharges`, `accommodations`) require a verified admin account (`isAdmin()`).
 4. **Strict Schema & Bounds**: Every write validates required/allowed keys (`hasAll` + `hasOnly`), string lengths (`.size()`), ID regex (`^[a-zA-Z0-9_\-]+$`), coordinate bounds (`latitude` in [-90, 90], `longitude` in [-180, 180]), and positive prices (when present).
 5. **Immutable Identifiers**: Primary IDs (`providerId`, `serviceId`, `recordId`, `chargeId`, `accommodationId`) must match the document path ID and remain immutable on update.
 
@@ -21,4 +22,4 @@
 9. **Oversized String Resource Exhaustion**: Sending a 10KB `address` string on `providers`.
 10. **Invalid Enum Injection**: Creating a `Service` with `category: "ExperimentalDiagnosis"`.
 11. **Immutable ID Mutation on Update**: Updating `providerId` on an existing `providers` document.
-12. **Arbitrary Unmatched Collection Write**: Attempting to write to `/users/attacker` or `/admins/attacker`.
+12. **Non-Admin MedicalCharge Write**: Non-admin signed-in user attempting to create or update a `MedicalCharge` document.

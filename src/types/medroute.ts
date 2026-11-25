@@ -13,7 +13,10 @@ export type ChargeType =
   | 'consultation_fee'
   | 'diagnostic_price'
   | 'treatment_package'
-  | 'per_session';
+  | 'per_session'
+  | 'per_consultation'
+  | 'per_test'
+  | 'per_procedure';
 
 export type TravelMode = 'DRIVE' | 'TWO_WHEELER' | 'TRANSIT' | 'WALK';
 
@@ -78,12 +81,12 @@ export interface MedicalChargeRecord {
   minAmount?: number | null;
   maxAmount?: number | null;
   chargeType: ChargeType;
+  includesNote?: string | null;
   sourceName: string;
   sourceUrl?: string | null;
   lastVerified: string;
   verificationStatus: VerificationStatus;
   dataOrigin: 'verified' | 'demo';
-  includesNote?: string | null;
 }
 
 export interface AccommodationRecord {
@@ -100,7 +103,9 @@ export interface AccommodationRecord {
   lastVerified: string;
   dataOrigin: DataOrigin;
   distanceFromHospitalKm?: number | null;
+  website?: string | null;
   googleMapsUri?: string | null;
+  phoneNumber?: string | null;
 }
 
 export interface DiscoveredProvider {
@@ -113,6 +118,17 @@ export interface DiscoveredProvider {
   straightLineDistanceKm: number | null;
 }
 
+export interface MoneyAmount {
+  amount: number;
+  currencyCode: string;
+  formattedText: string;
+}
+
+export interface TollEstimateInfo {
+  hasTolls: boolean;
+  estimatedPrices: MoneyAmount[];
+}
+
 export interface TravelModeResult {
   mode: TravelMode;
   supported: boolean;
@@ -120,6 +136,8 @@ export interface TravelModeResult {
   distanceKm: number | null;
   durationSeconds: number | null;
   durationText: string;
+  transitFare?: MoneyAmount | null;
+  tollInfo?: TollEstimateInfo | null;
   source: 'google_routes' | 'demo_estimate';
   errorMessage?: string | null;
 }
@@ -152,20 +170,45 @@ export interface MapsApiDiagnostic {
   details?: string | null;
 }
 
+export type TravelCostMethod =
+  | 'none'
+  | 'transit_api'
+  | 'taxi_formula'
+  | 'car_fuel'
+  | 'two_wheeler_fuel'
+  | 'manual';
+
+export interface TravelCostConfig {
+  method: TravelCostMethod;
+  taxiBaseFare: string;
+  taxiPerKmRate: string;
+  taxiExtraCharges: string;
+  carMileageKmPerL: string;
+  carFuelPricePerL: string;
+  carTollsRoundTrip: string;
+  twoWheelerMileageKmPerL: string;
+  twoWheelerFuelPricePerL: string;
+  manualRoundTripFare: string;
+}
+
 export interface CostRange {
   min: number;
   max: number;
 }
+
+export type EstimateConfidence = 'high' | 'medium' | 'low' | 'incomplete';
 
 export interface JourneyCostBreakdown {
   medicalCharge: CostRange | null;
   medicalChargeLabel: string;
   medicalChargeSource: string;
   medicalChargeVerified: string;
+  medicalChargeConfidenceLabel: string;
   medicalChargeAvailable: boolean;
 
   travelRoundTrip: CostRange | null;
   travelSourceLabel: string;
+  travelFormulaBreakdown: string | null;
   travelAvailable: boolean;
 
   accommodationIncluded: boolean;
@@ -181,6 +224,8 @@ export interface JourneyCostBreakdown {
 
   totalRange: CostRange | null;
   isComplete: boolean;
+  estimateConfidence: EstimateConfidence;
+  estimateConfidenceLabel: string;
   missingComponents: string[];
 }
 
@@ -189,6 +234,7 @@ export interface ProviderJourneyState {
   travelLoading: boolean;
   travelError: MapsApiDiagnostic | null;
   selectedTravelMode: TravelMode;
+  travelCostConfig: TravelCostConfig;
   manualRoundTripFare: string;
 
   accommodations: AccommodationRecord[];

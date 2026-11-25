@@ -33,60 +33,72 @@ export interface FirestoreCatalogSnapshot {
   errorMessage?: string | null;
 }
 
-const VALID_ORIGINS = ['verified', 'demo'] as const;
+const CATALOG_ORIGINS = ['verified', 'demo'] as const;
 const VALID_CATEGORIES = [
   'Consultation',
   'Diagnostics',
   'Treatment and Procedures',
 ] as const;
 
+function isPermissionError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return (
+    message.toLowerCase().includes('permission') ||
+    message.toLowerCase().includes('permission-denied')
+  );
+}
+
+async function listCollectionWithContext<T>(
+  collectionPath: string,
+  originsOrCategoriesField: string,
+  values: readonly string[]
+): Promise<T[]> {
+  try {
+    const snap = await getDocs(
+      query(
+        collection(db, collectionPath),
+        where(originsOrCategoriesField, 'in', [...values])
+      )
+    );
+    return snap.docs.map((d) => d.data() as T);
+  } catch (error) {
+    if (isPermissionError(error)) {
+      handleFirestoreError(error, OperationType.LIST, collectionPath);
+    }
+    throw error;
+  }
+}
+
 export async function fetchFirestoreCatalog(): Promise<FirestoreCatalogSnapshot> {
   try {
-    const [providersSnap, servicesSnap, psSnap, chargesSnap, accSnap] =
+    const [providers, services, providerServices, medicalCharges, accommodations] =
       await Promise.all([
-        getDocs(
-          query(
-            collection(db, 'providers'),
-            where('dataOrigin', 'in', [...VALID_ORIGINS])
-          )
+        listCollectionWithContext<ProviderRecord>(
+          'providers',
+          'dataOrigin',
+          CATALOG_ORIGINS
         ),
-        getDocs(
-          query(
-            collection(db, 'services'),
-            where('category', 'in', [...VALID_CATEGORIES])
-          )
+        listCollectionWithContext<MedicalService>(
+          'services',
+          'category',
+          VALID_CATEGORIES
         ),
-        getDocs(
-          query(
-            collection(db, 'providerServices'),
-            where('dataOrigin', 'in', [...VALID_ORIGINS])
-          )
+        listCollectionWithContext<ProviderServiceRecord>(
+          'providerServices',
+          'dataOrigin',
+          CATALOG_ORIGINS
         ),
-        getDocs(
-          query(
-            collection(db, 'medicalCharges'),
-            where('dataOrigin', 'in', [...VALID_ORIGINS])
-          )
+        listCollectionWithContext<MedicalChargeRecord>(
+          'medicalCharges',
+          'dataOrigin',
+          CATALOG_ORIGINS
         ),
-        getDocs(
-          query(
-            collection(db, 'accommodations'),
-            where('dataOrigin', 'in', [...VALID_ORIGINS])
-          )
+        listCollectionWithContext<AccommodationRecord>(
+          'accommodations',
+          'dataOrigin',
+          CATALOG_ORIGINS
         ),
       ]);
-
-    const providers = providersSnap.docs.map((d) => d.data() as ProviderRecord);
-    const services = servicesSnap.docs.map((d) => d.data() as MedicalService);
-    const providerServices = psSnap.docs.map(
-      (d) => d.data() as ProviderServiceRecord
-    );
-    const medicalCharges = chargesSnap.docs.map(
-      (d) => d.data() as MedicalChargeRecord
-    );
-    const accommodations = accSnap.docs.map(
-      (d) => d.data() as AccommodationRecord
-    );
 
     const isEmpty = providers.length === 0 && services.length === 0;
 
@@ -100,15 +112,7 @@ export async function fetchFirestoreCatalog(): Promise<FirestoreCatalogSnapshot>
       isEmpty,
       errorMessage: null,
     };
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    if (message.toLowerCase().includes('permission')) {
-      try {
-        handleFirestoreError(error, OperationType.LIST, 'providers');
-      } catch {
-        // Logged structured FirestoreErrorInfo above; return safe non-crashing state to UI
-      }
-    }
+  } catch {
     return {
       providers: [],
       services: [],
@@ -142,21 +146,27 @@ function sanitizeProviderForFirestore(p: ProviderRecord) {
   };
 }
 
-function sanitizeChargeForFirestore(c: MedicalChargeRecord) {
-  return {
-    chargeId: c.chargeId,
-    providerId: c.providerId,
-    serviceId: c.serviceId,
-    amount: c.amount ?? null,
-    minAmount: c.minAmount ?? null,
-    maxAmount: c.maxAmount ?? null,
+export function sanitizeChargeForFirestore(c: MedicalChargeRecord) {
+  const payload: Record<string, unknown> = {
+    chargeId: c.chargeId.slice(0, 128),
+    providerId: c.providerId.slice(0, 128),
+    serviceId: c.serviceId.slice(0, 128),
+    amount: typeof c.amount === 'number' && c.amount > 0 ? c.amount : null,
+    minAmount: typeof c.minAmount === 'number' && c.minAmount > 0 ? c.minAmount : null,
+    maxAmount: typeof c.maxAmount === 'number' && c.maxAmount > 0 ? c.maxAmount : null,
     chargeType: c.chargeType,
     sourceName: c.sourceName.slice(0, 160),
-    sourceUrl: c.sourceUrl ? c.sourceUrl.slice(0, 240) : null,
+    sourceUrl: c.sourceUrl ? c.sourceUrl.slice(0, 500) : null,
     lastVerified: c.lastVerified.slice(0, 40),
     verificationStatus: c.verificationStatus,
-    dataOrigin: c.dataOrigin,
+    dataOrigin: c.dataOrigin === 'verified' ? 'verified' : 'demo',
   };
+
+  if (c.includesNote !== undefined) {
+    payload.includesNote = c.includesNote ? c.includesNote.slice(0, 280) : null;
+  }
+
+  return payload;
 }
 
 function sanitizeAccommodationForFirestore(a: AccommodationRecord) {

@@ -186,8 +186,45 @@ export function buildGoogleMapsNavigationUrl(
   return `https://www.google.com/maps/dir/?${params.toString()}`;
 }
 
+export function buildGoogleMapsPlaceUrl(
+  googleMapsUri: string | null | undefined,
+  coords?: Partial<Coordinates> | null,
+  label?: string | null
+): string | null {
+  const direct = sanitizeExternalUrl(googleMapsUri);
+  if (direct) return direct;
+
+  if (coords && isValidCoordinatePair(coords.latitude, coords.longitude)) {
+    const params = new URLSearchParams({
+      api: '1',
+      query: `${coords.latitude},${coords.longitude}`,
+    });
+    return `https://www.google.com/maps/search/?${params.toString()}`;
+  }
+
+  if (typeof label === 'string' && label.trim().length > 0) {
+    const params = new URLSearchParams({
+      api: '1',
+      query: label.trim(),
+    });
+    return `https://www.google.com/maps/search/?${params.toString()}`;
+  }
+
+  return null;
+}
+
 export function displayTextOrUnavailable(value: string | null | undefined): string {
   if (typeof value !== 'string') return UNAVAILABLE_TEXT;
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : UNAVAILABLE_TEXT;
 }
+
+export function sanitizeTelUri(phone: string | null | undefined): string | null {
+  if (typeof phone !== 'string') return null;
+  const trimmed = phone.trim();
+  if (!trimmed) return null;
+  const cleaned = trimmed.replace(/[^\d+]/g, '');
+  if (!cleaned || cleaned === '+') return null;
+  return `tel:${cleaned}`;
+}
+

@@ -34,8 +34,8 @@ import {
   fetchMapsBackendStatus,
   searchLiveAccommodationsViaBackend,
   searchLiveProvidersViaBackend,
-  type MapsBackendStatus,
 } from './services/mapsApiClient';
+import { createDefaultTravelCostConfig } from './utils/costEngine';
 import { calculateHaversineKm, isValidCoordinatePair } from './utils/safety';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { Header } from './components/Header';
@@ -63,6 +63,7 @@ function createEmptyProviderJourneyState(): ProviderJourneyState {
     travelLoading: false,
     travelError: null,
     selectedTravelMode: 'DRIVE',
+    travelCostConfig: createDefaultTravelCostConfig('DRIVE'),
     manualRoundTripFare: '',
     accommodations: [],
     accommodationsLoading: false,
@@ -143,12 +144,13 @@ function MedRouteWorkspace() {
     initial.searchInput
   );
 
-  // Google Maps backend key & Demo Key quota banner state
-  const [mapsBackendStatus, setMapsBackendStatus] =
-    useState<MapsBackendStatus | null>(null);
+  // Google Maps backend readiness + quota banner state
+  const [mapsKeyConfigured, setMapsKeyConfigured] = useState<boolean | null>(
+    null
+  );
   const [quotaReached, setQuotaReached] = useState(false);
 
-  // Cloud Firestore catalog + optional admin auto-seeding state
+  // Cloud Firestore catalog state
   const [firestoreCatalog, setFirestoreCatalog] =
     useState<FirestoreCatalogSnapshot | null>(null);
   const [currentUser, setCurrentUser] = useState<User | null>(null);
@@ -205,8 +207,8 @@ function MedRouteWorkspace() {
   }, []);
 
   useEffect(() => {
-    void fetchMapsBackendStatus().then((status) =>
-      setMapsBackendStatus(status)
+    void fetchMapsBackendStatus().then((s) =>
+      setMapsKeyConfigured(s.configured)
     );
     void refreshFirestoreCatalog();
 
@@ -215,6 +217,11 @@ function MedRouteWorkspace() {
     });
     return () => unsub();
   }, [refreshFirestoreCatalog]);
+
+  const firestoreCharges = useMemo(
+    () => firestoreCatalog?.medicalCharges || [],
+    [firestoreCatalog]
+  );
 
   // Auto-seed sample dataset into Firestore when collections are empty and admin is signed in
   useEffect(() => {
@@ -416,10 +423,9 @@ function MedRouteWorkspace() {
       firestoreCatalog?.providerServices.filter(
         (ps) => ps.dataOrigin === 'verified'
       ) || [];
-    const verifiedCharges =
-      firestoreCatalog?.medicalCharges.filter(
-        (c) => c.dataOrigin === 'verified'
-      ) || [];
+    const verifiedCharges = firestoreCharges.filter(
+      (c) => c.dataOrigin === 'verified'
+    );
 
     const curatedMatches = buildCatalogProvidersForService(
       svc.serviceId,
@@ -452,16 +458,28 @@ function MedRouteWorkspace() {
       curatedMatches.map((m) => m.provider.name.trim().toLowerCase())
     );
 
+    const findStoredChargeForLivePlace = (
+      pid: string
+    ): MedicalChargeRecord | null => {
+      return (
+        verifiedCharges.find(
+          (c) => c.serviceId === svc.serviceId && c.providerId === pid
+        ) || null
+      );
+    };
+
     const liveItems: DiscoveredProvider[] = liveRes.places
       .filter((p) => !existingNames.has(p.name.trim().toLowerCase()))
       .map((p) => {
+        const pid = `gplace-${p.placeId}`;
         const distKm = calculateHaversineKm(
           { latitude: origin.latitude, longitude: origin.longitude },
           { latitude: p.latitude, longitude: p.longitude }
         );
+        const storedCharge = findStoredChargeForLivePlace(pid);
         return {
           provider: {
-            providerId: `gplace-${p.placeId}`,
+            providerId: pid,
             name: p.name,
             providerType: p.providerType,
             address: p.address,
@@ -477,11 +495,14 @@ function MedRouteWorkspace() {
             dataOrigin: 'live_places',
             googleMapsUri: p.googleMapsUri,
           },
-          serviceVerification: 'unverified',
+          serviceVerification:
+            storedCharge?.verificationStatus === 'verified'
+              ? 'verified'
+              : 'unverified',
           serviceSource: 'Google Places API (New) — department unverified',
           serviceLastVerified: 'Live listing',
           availableServices: [],
-          charge: null,
+          charge: storedCharge,
           straightLineDistanceKm: distKm,
         };
       });
@@ -525,36 +546,51 @@ function MedRouteWorkspace() {
       const existingIds = new Set(
         discoveredProviders.map((d) => d.provider.providerId)
       );
+      const verifiedCharges = firestoreCharges.filter(
+        (c) => c.dataOrigin === 'verified'
+      );
       const added: DiscoveredProvider[] = moreRes.places
         .filter((p) => !existingIds.has(`gplace-${p.placeId}`))
-        .map((p) => ({
-          provider: {
-            providerId: `gplace-${p.placeId}`,
-            name: p.name,
-            providerType: p.providerType,
-            address: p.address,
-            city: origin.city || '',
-            state: origin.state || '',
-            pincode: null,
-            latitude: p.latitude,
-            longitude: p.longitude,
-            phone: p.phone,
-            website: p.website,
-            source: 'Google Places API (New)',
-            lastVerified: 'Live listing',
-            dataOrigin: 'live_places',
-            googleMapsUri: p.googleMapsUri,
-          },
-          serviceVerification: 'unverified',
-          serviceSource: 'Google Places API (New) — department unverified',
-          serviceLastVerified: 'Live listing',
-          availableServices: [],
-          charge: null,
-          straightLineDistanceKm: calculateHaversineKm(
-            { latitude: origin.latitude, longitude: origin.longitude },
-            { latitude: p.latitude, longitude: p.longitude }
-          ),
-        }));
+        .map((p) => {
+          const pid = `gplace-${p.placeId}`;
+          const storedCharge =
+            verifiedCharges.find(
+              (c) =>
+                c.serviceId === selectedService.serviceId &&
+                c.providerId === pid
+            ) || null;
+          return {
+            provider: {
+              providerId: pid,
+              name: p.name,
+              providerType: p.providerType,
+              address: p.address,
+              city: origin.city || '',
+              state: origin.state || '',
+              pincode: null,
+              latitude: p.latitude,
+              longitude: p.longitude,
+              phone: p.phone,
+              website: p.website,
+              source: 'Google Places API (New)',
+              lastVerified: 'Live listing',
+              dataOrigin: 'live_places',
+              googleMapsUri: p.googleMapsUri,
+            },
+            serviceVerification:
+              storedCharge?.verificationStatus === 'verified'
+                ? 'verified'
+                : 'unverified',
+            serviceSource: 'Google Places API (New) — department unverified',
+            serviceLastVerified: 'Live listing',
+            availableServices: [],
+            charge: storedCharge,
+            straightLineDistanceKm: calculateHaversineKm(
+              { latitude: origin.latitude, longitude: origin.longitude },
+              { latitude: p.latitude, longitude: p.longitude }
+            ),
+          };
+        });
 
       const mergedSorted = sortByProximity([...discoveredProviders, ...added]);
       setDiscoveredProviders(mergedSorted);
@@ -726,7 +762,9 @@ function MedRouteWorkspace() {
                   },
                   { latitude: p.latitude, longitude: p.longitude }
                 ),
+                website: p.website,
                 googleMapsUri: p.googleMapsUri,
+                phoneNumber: p.phoneNumber ?? null,
               }))
             : [];
 
@@ -792,6 +830,34 @@ function MedRouteWorkspace() {
         ...patch,
       },
     }));
+  };
+
+  const handleChangeTravelModeForProvider = (
+    providerId: string,
+    nextMode: TravelMode
+  ) => {
+    setJourneyStates((prev) => {
+      const current = prev[providerId] || createEmptyProviderJourneyState();
+      const prevMethod = current.travelCostConfig.method;
+      let nextMethod = prevMethod;
+      if (prevMethod !== 'manual') {
+        if (nextMode === 'TRANSIT') nextMethod = 'transit_api';
+        else if (nextMode === 'TWO_WHEELER') nextMethod = 'two_wheeler_fuel';
+        else if (nextMode === 'WALK') nextMethod = 'none';
+        else if (prevMethod !== 'car_fuel') nextMethod = 'taxi_formula';
+      }
+      return {
+        ...prev,
+        [providerId]: {
+          ...current,
+          selectedTravelMode: nextMode,
+          travelCostConfig: {
+            ...current.travelCostConfig,
+            method: nextMethod,
+          },
+        },
+      };
+    });
   };
 
   const handleOwnerSignIn = async () => {
@@ -894,20 +960,12 @@ function MedRouteWorkspace() {
               {mode === 'live' ? (
                 <>
                   Using Google Maps APIs &amp; Cloud Firestore
-                  {mapsBackendStatus && !mapsBackendStatus.backendReachable && (
+                  {mapsKeyConfigured === false && (
                     <span className="text-amber-800 font-medium">
                       {' '}
-                      · Backend Maps API route unavailable (/api/maps/status)
+                      · GOOGLE_MAPS_API_KEY not configured on server
                     </span>
                   )}
-                  {mapsBackendStatus &&
-                    mapsBackendStatus.backendReachable &&
-                    !mapsBackendStatus.configured && (
-                      <span className="text-amber-800 font-medium">
-                        {' '}
-                        · GOOGLE_MAPS_API_KEY not configured on server
-                      </span>
-                    )}
                 </>
               ) : (
                 'Demo Data (Greater Kolkata illustrative sample · Works offline without API keys)'
@@ -915,8 +973,8 @@ function MedRouteWorkspace() {
             </span>
           </div>
 
-          {/* Optional Owner Sync Control for Firestore Empty-Collection Auto-Seeding */}
-          <div className="flex items-center gap-3 text-xs text-slate-500">
+          {/* Optional Owner Sync Controls */}
+          <div className="flex flex-wrap items-center gap-3 text-xs text-slate-500">
             {firestoreCatalog?.fromFirestore && (
               <span className="inline-flex items-center gap-1.5 whitespace-nowrap">
                 <Database className="w-3.5 h-3.5 text-[#0F766E]" />
@@ -1012,15 +1070,9 @@ function MedRouteWorkspace() {
             }
             onOpenCompare={() => setActiveSection('compare')}
             onChangeTravelMode={(travelMode: TravelMode) =>
-              updateProviderJourneyField(
+              handleChangeTravelModeForProvider(
                 selectedProviderItem.provider.providerId,
-                { selectedTravelMode: travelMode }
-              )
-            }
-            onChangeManualRoundTripFare={(val) =>
-              updateProviderJourneyField(
-                selectedProviderItem.provider.providerId,
-                { manualRoundTripFare: val }
+                travelMode
               )
             }
             onSelectAccommodation={(accId) =>
