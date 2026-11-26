@@ -36,7 +36,11 @@ import {
   searchLiveProvidersViaBackend,
 } from './services/mapsApiClient';
 import { createDefaultTravelCostConfig } from './utils/costEngine';
-import { calculateHaversineKm, isValidCoordinatePair } from './utils/safety';
+import {
+  calculateHaversineKm,
+  isNotFoundServiceId,
+  isValidCoordinatePair,
+} from './utils/safety';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { Header } from './components/Header';
 import { JourneySearchForm } from './components/JourneySearchForm';
@@ -50,6 +54,7 @@ const STORAGE_KEY = 'medroute_journey_v1';
 const DEFAULT_SEARCH_INPUT: JourneySearchInput = {
   category: 'Consultation',
   serviceId: 'cons-cardiology',
+  customServiceName: '',
   locationMode: 'manual',
   manualLocationText: '',
   startingLocation: null,
@@ -97,6 +102,10 @@ function loadSavedModeAndSearch(): {
             typeof si.serviceId === 'string' && si.serviceId
               ? si.serviceId
               : 'cons-cardiology',
+          customServiceName:
+            typeof si.customServiceName === 'string'
+              ? si.customServiceName
+              : '',
           locationMode: si.locationMode === 'gps' ? 'gps' : 'manual',
           manualLocationText:
             typeof si.manualLocationText === 'string'
@@ -264,12 +273,26 @@ function MedRouteWorkspace() {
     return SERVICE_CATALOG;
   }, [firestoreCatalog]);
 
-  const selectedService = useMemo(
-    () =>
-      servicesCatalog.find((s) => s.serviceId === searchInput.serviceId) ||
-      null,
-    [servicesCatalog, searchInput.serviceId]
-  );
+  const selectedService = useMemo(() => {
+    if (isNotFoundServiceId(searchInput.serviceId)) {
+      const customName = (searchInput.customServiceName || '').trim();
+      return {
+        serviceId: searchInput.serviceId,
+        category: searchInput.category,
+        serviceName: customName || 'Not Found / Other Service',
+        description:
+          "This service is not currently available in MedRoute's predefined verified service list.",
+      };
+    }
+    return (
+      servicesCatalog.find((s) => s.serviceId === searchInput.serviceId) || null
+    );
+  }, [
+    servicesCatalog,
+    searchInput.serviceId,
+    searchInput.category,
+    searchInput.customServiceName,
+  ]);
 
   // Build catalog lookup for Demo Mode (Firestore demo records if seeded, else built-in Demo dataset)
   const getActiveDemoDataset = useCallback(() => {
@@ -388,6 +411,12 @@ function MedRouteWorkspace() {
     setJourneyStates({});
     setVisibleCount(INITIAL_PAGE_SIZE);
     setLiveNextPageToken(null);
+
+    if (isNotFoundServiceId(resolvedInput.serviceId)) {
+      setDiscoveredProviders([]);
+      setIsSearching(false);
+      return;
+    }
 
     const origin = resolvedInput.startingLocation;
     const svc = servicesCatalog.find(
@@ -918,7 +947,11 @@ function MedRouteWorkspace() {
         activeSection={activeSection}
         onNavigate={(section) => setActiveSection(section)}
         onResetJourney={handleResetJourney}
-        hasResults={discoveredProviders.length > 0 || searchDiagnostic !== null}
+        hasResults={
+          discoveredProviders.length > 0 ||
+          searchDiagnostic !== null ||
+          activeSection === 'results'
+        }
         hasSelectedProvider={selectedProviderItem !== null}
         compareCount={comparedIds.length}
       />

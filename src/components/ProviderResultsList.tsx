@@ -17,6 +17,7 @@ import {
   buildGoogleMapsPlaceUrl,
   formatDistanceKm,
   formatINRRange,
+  isNotFoundServiceId,
   sanitizeExternalUrl,
   sanitizeTelUri,
   UNAVAILABLE_TEXT,
@@ -66,19 +67,30 @@ export function ProviderResultsList({
 }: ProviderResultsListProps) {
   const displayedProviders = providers.slice(0, visibleCount);
   const canLoadMore = visibleCount < providers.length || hasMoreRemote;
+  const isCustomService = isNotFoundServiceId(searchInput.serviceId);
+  const customServiceLabel =
+    (searchInput.customServiceName || '').trim() || 'Custom Service';
 
   return (
     <section className="space-y-6">
       {/* Results Header Bar */}
       <div className="flex flex-col md:flex-row md:items-end justify-between gap-4 border-b border-slate-200 pb-4">
         <div className="space-y-1">
-          <p className="text-xs font-medium text-[#0F766E]">
-            Sorted strictly by geographical proximity · Nearest first
+          <p
+            className={`text-xs font-medium ${
+              isCustomService ? 'text-amber-800' : 'text-[#0F766E]'
+            }`}
+          >
+            {isCustomService
+              ? "Unverified custom service · Not in MedRoute's predefined verified service list"
+              : 'Sorted strictly by geographical proximity · Nearest first'}
           </p>
           <h1 className="text-2xl font-bold text-[#0F2942]">
-            {selectedService
-              ? `${selectedService.serviceName} (${selectedService.category})`
-              : 'Provider Results'}
+            {isCustomService
+              ? `${customServiceLabel} (${searchInput.category})`
+              : selectedService
+                ? `${selectedService.serviceName} (${selectedService.category})`
+                : 'Provider Results'}
           </h1>
           <p className="text-sm text-slate-600">
             From{' '}
@@ -139,37 +151,71 @@ export function ProviderResultsList({
       {/* Empty Results State */}
       {!isLoading && displayedProviders.length === 0 && !diagnostic && (
         <div className="bg-white border border-slate-200 rounded-lg p-8 text-center space-y-4">
-          <div className="mx-auto w-10 h-10 rounded-full bg-slate-100 flex items-center justify-center text-slate-500">
+          <div
+            className={`mx-auto w-10 h-10 rounded-full flex items-center justify-center ${
+              isCustomService
+                ? 'bg-amber-100 text-amber-800'
+                : 'bg-slate-100 text-slate-500'
+            }`}
+          >
             <MapPin className="w-5 h-5" />
           </div>
-          <div className="max-w-lg mx-auto space-y-1.5">
-            <h2 className="text-lg font-semibold text-slate-900">
-              No matching providers found near this location
-            </h2>
-            <p className="text-sm text-slate-600 leading-relaxed">
-              {mode === 'demo'
-                ? 'Demo Mode contains a sample Greater Kolkata dataset only. No sample hospitals exist near the selected city. Try a Greater Kolkata starting location (such as Esplanade, Salt Lake, or Howrah) or switch to Live Mode for Pan-India discovery.'
-                : 'No verified database providers or Google Places listings were returned near your chosen location for this service. Try broadening the city or locality name.'}
-            </p>
-          </div>
-          <div className="flex flex-wrap items-center justify-center gap-3 pt-2">
-            <button
-              type="button"
-              onClick={onBackToSearch}
-              className="px-4 py-2 text-sm font-medium text-white bg-[#0F2942] rounded-md hover:bg-[#163A5C] transition-colors whitespace-nowrap"
-            >
-              Change Starting Location
-            </button>
-            {mode === 'live' && (
-              <button
-                type="button"
-                onClick={onSwitchToDemo}
-                className="px-4 py-2 text-sm font-medium text-slate-700 border border-slate-300 rounded-md hover:bg-slate-50 transition-colors whitespace-nowrap"
-              >
-                Explore Demo Data (Kolkata)
-              </button>
-            )}
-          </div>
+          {isCustomService ? (
+            <>
+              <div className="max-w-lg mx-auto space-y-1.5">
+                <h2 className="text-lg font-semibold text-slate-900">
+                  Service not found — No verified providers found
+                </h2>
+                <p className="text-sm text-slate-600 leading-relaxed">
+                  &ldquo;{customServiceLabel}&rdquo; is not currently available in MedRoute&apos;s predefined verified service list under{' '}
+                  <span className="font-medium text-slate-800">
+                    {searchInput.category}
+                  </span>
+                  . MedRoute cannot match or verify provider availability for custom unverified services.
+                </p>
+              </div>
+              <div className="flex flex-wrap items-center justify-center gap-3 pt-2">
+                <button
+                  type="button"
+                  onClick={onBackToSearch}
+                  className="px-4 py-2 text-sm font-medium text-white bg-[#0F2942] rounded-md hover:bg-[#163A5C] transition-colors whitespace-nowrap"
+                >
+                  Modify Service Search
+                </button>
+              </div>
+            </>
+          ) : (
+            <>
+              <div className="max-w-lg mx-auto space-y-1.5">
+                <h2 className="text-lg font-semibold text-slate-900">
+                  No matching providers found near this location
+                </h2>
+                <p className="text-sm text-slate-600 leading-relaxed">
+                  {mode === 'demo'
+                    ? 'Demo Mode contains a sample Greater Kolkata dataset only. No sample hospitals exist near the selected city. Try a Greater Kolkata starting location (such as Esplanade, Salt Lake, or Howrah) or switch to Live Mode for Pan-India discovery.'
+                    : 'No verified database providers or Google Places listings were returned near your chosen location for this service. Try broadening the city or locality name.'}
+                </p>
+              </div>
+              <div className="flex flex-wrap items-center justify-center gap-3 pt-2">
+                <button
+                  type="button"
+                  onClick={onBackToSearch}
+                  className="px-4 py-2 text-sm font-medium text-white bg-[#0F2942] rounded-md hover:bg-[#163A5C] transition-colors whitespace-nowrap"
+                >
+                  Change Starting Location
+                </button>
+                {mode === 'live' && (
+                  <button
+                    type="button"
+                    onClick={onSwitchToDemo}
+                    className="px-4 py-2 text-sm font-medium text-slate-700 border border-slate-300 rounded-md hover:bg-slate-50 transition-colors whitespace-nowrap"
+                  >
+                    Explore Demo Data (Kolkata)
+                  </button>
+                )}
+              </div>
+            </>
+          )}
         </div>
       )}
 

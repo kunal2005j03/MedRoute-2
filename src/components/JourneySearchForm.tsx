@@ -1,5 +1,13 @@
-import React, { useState } from 'react';
-import { LocateFixed, MapPin, Search, AlertCircle } from 'lucide-react';
+import React, { useEffect, useRef, useState } from 'react';
+import {
+  AlertCircle,
+  Check,
+  ChevronDown,
+  LocateFixed,
+  MapPin,
+  Search,
+  X,
+} from 'lucide-react';
 import type {
   AppMode,
   JourneySearchInput,
@@ -13,6 +21,7 @@ import { geocodeLocationViaBackend } from '../services/mapsApiClient';
 import {
   formatNumber,
   isValidCoordinatePair,
+  NOT_FOUND_SERVICE_IDS,
   parsePositiveWholeNights,
 } from '../utils/safety';
 import { DiagnosticAlert } from './DiagnosticAlert';
@@ -61,28 +70,101 @@ export function JourneySearchForm({
   );
   const [formError, setFormError] = useState<string | null>(null);
   const [serviceSearchQuery, setServiceSearchQuery] = useState('');
+  const [isDropdownOpen, setIsDropdownOpen] = useState(false);
+
+  const dropdownRef = useRef<HTMLDivElement | null>(null);
+  const serviceSearchInputRef = useRef<HTMLInputElement | null>(null);
+
+  const notFoundIdForCategory = NOT_FOUND_SERVICE_IDS[searchInput.category];
+  const isNotFoundSelected = searchInput.serviceId === notFoundIdForCategory;
 
   const categoryServices = services.filter(
     (s) => s.category === searchInput.category
   );
 
-  const filteredCategoryServices = categoryServices.filter((s) =>
-    s.serviceName.toLowerCase().includes(serviceSearchQuery.toLowerCase().trim())
-  );
+  const normalizedServiceQuery = serviceSearchQuery.toLowerCase().trim();
+  const filteredCategoryServices = normalizedServiceQuery
+    ? categoryServices.filter((s) =>
+        s.serviceName.toLowerCase().includes(normalizedServiceQuery)
+      )
+    : categoryServices;
 
-  const selectedService =
-    categoryServices.find((s) => s.serviceId === searchInput.serviceId) ||
-    categoryServices[0] ||
-    null;
+  const selectedService = isNotFoundSelected
+    ? null
+    : categoryServices.find((s) => s.serviceId === searchInput.serviceId) ||
+      categoryServices[0] ||
+      null;
+
+  useEffect(() => {
+    if (!isDropdownOpen) return;
+
+    const handleClickOutside = (event: MouseEvent | TouchEvent) => {
+      if (
+        dropdownRef.current &&
+        !dropdownRef.current.contains(event.target as Node)
+      ) {
+        setIsDropdownOpen(false);
+      }
+    };
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setIsDropdownOpen(false);
+      }
+    };
+
+    document.addEventListener('mousedown', handleClickOutside);
+    document.addEventListener('touchstart', handleClickOutside);
+    document.addEventListener('keydown', handleKeyDown);
+
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+      document.removeEventListener('touchstart', handleClickOutside);
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [isDropdownOpen]);
+
+  useEffect(() => {
+    if (isDropdownOpen) {
+      const timer = window.setTimeout(() => {
+        serviceSearchInputRef.current?.focus();
+      }, 0);
+      return () => window.clearTimeout(timer);
+    }
+  }, [isDropdownOpen]);
 
   const handleCategoryChange = (category: ServiceCategory) => {
     const firstInCategory = services.find((s) => s.category === category);
     setFormError(null);
     setServiceSearchQuery('');
+    setIsDropdownOpen(false);
     onChangeSearchInput({
       ...searchInput,
       category,
       serviceId: firstInCategory ? firstInCategory.serviceId : '',
+      customServiceName: '',
+    });
+  };
+
+  const handleSelectPredefinedService = (svc: MedicalService) => {
+    setFormError(null);
+    setServiceSearchQuery('');
+    setIsDropdownOpen(false);
+    onChangeSearchInput({
+      ...searchInput,
+      serviceId: svc.serviceId,
+      customServiceName: '',
+    });
+  };
+
+  const handleSelectNotFound = () => {
+    setFormError(null);
+    setServiceSearchQuery('');
+    setIsDropdownOpen(false);
+    onChangeSearchInput({
+      ...searchInput,
+      serviceId: notFoundIdForCategory,
+      customServiceName: searchInput.customServiceName || '',
     });
   };
 
@@ -222,7 +304,15 @@ export function JourneySearchForm({
     e.preventDefault();
     setFormError(null);
 
-    if (!selectedService) {
+    if (isNotFoundSelected) {
+      const trimmedCustom = (searchInput.customServiceName || '').trim();
+      if (!trimmedCustom) {
+        setFormError(
+          'Please enter the medical service you are looking for before searching.'
+        );
+        return;
+      }
+    } else if (!selectedService) {
       setFormError('Please select a medical service before searching.');
       return;
     }
@@ -260,9 +350,16 @@ export function JourneySearchForm({
       return;
     }
 
+    const resolvedServiceId = isNotFoundSelected
+      ? notFoundIdForCategory
+      : selectedService!.serviceId;
+
     onSubmitSearch({
       ...searchInput,
-      serviceId: selectedService.serviceId,
+      serviceId: resolvedServiceId,
+      customServiceName: isNotFoundSelected
+        ? (searchInput.customServiceName || '').trim()
+        : '',
       startingLocation: resolvedLocation,
       nights: searchInput.needsAccommodation ? validatedNights : 0,
     });
@@ -342,44 +439,178 @@ export function JourneySearchForm({
           </div>
 
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 items-start">
-            <div className="space-y-2.5">
-              <input
-                type="text"
-                value={serviceSearchQuery}
-                onChange={(e) => setServiceSearchQuery(e.target.value)}
-                placeholder="Search services (e.g. Cardiology, MRI, Dialysis)..."
-                className="w-full h-10 px-3.5 text-sm bg-white border border-slate-300 rounded-md text-slate-900 focus:border-[#0F766E] focus:outline-none placeholder:text-slate-400"
-              />
-              <select
-                id="medroute-service-select"
-                value={selectedService?.serviceId || ''}
-                onChange={(e) =>
-                  onChangeSearchInput({
-                    ...searchInput,
-                    serviceId: e.target.value,
-                  })
-                }
-                className="w-full h-11 px-3.5 text-sm bg-white border border-slate-300 rounded-md text-slate-900 focus:border-[#0F766E] focus:outline-none"
-              >
-                {filteredCategoryServices.length === 0 ? (
-                  <option value="" disabled>No matching services found</option>
-                ) : (
-                  filteredCategoryServices.map((svc) => (
-                    <option key={svc.serviceId} value={svc.serviceId}>
-                      {svc.serviceName}
-                    </option>
-                  ))
+            <div className="space-y-3">
+              {/* Custom Searchable Dropdown (single source of truth) */}
+              <div ref={dropdownRef} className="relative">
+                <button
+                  id="medroute-service-select"
+                  type="button"
+                  aria-haspopup="listbox"
+                  aria-expanded={isDropdownOpen}
+                  onClick={() => setIsDropdownOpen((prev) => !prev)}
+                  className="w-full min-h-[44px] px-3.5 py-2 text-sm bg-white border border-slate-300 rounded-md text-slate-900 hover:border-slate-400 focus:border-[#0F766E] focus:outline-none flex items-center justify-between gap-2 text-left transition-colors"
+                >
+                  <span className="truncate font-medium">
+                    {isNotFoundSelected
+                      ? 'Not Found / Other Service'
+                      : selectedService?.serviceName || 'Select a medical service'}
+                  </span>
+                  <ChevronDown
+                    className={`w-4 h-4 text-slate-500 shrink-0 transition-transform ${
+                      isDropdownOpen ? 'rotate-180' : ''
+                    }`}
+                  />
+                </button>
+
+                {isDropdownOpen && (
+                  <div
+                    role="listbox"
+                    aria-label={`${searchInput.category} services`}
+                    className="absolute z-30 left-0 right-0 mt-1.5 bg-white border border-slate-300 rounded-md shadow-lg overflow-hidden"
+                  >
+                    {/* Integrated Search Filter */}
+                    <div className="p-2 border-b border-slate-200 bg-slate-50/70">
+                      <div className="relative flex items-center">
+                        <Search className="w-4 h-4 text-slate-400 absolute left-3 pointer-events-none" />
+                        <input
+                          ref={serviceSearchInputRef}
+                          type="text"
+                          value={serviceSearchQuery}
+                          onChange={(e) => setServiceSearchQuery(e.target.value)}
+                          placeholder={`Search ${searchInput.category.toLowerCase()} services...`}
+                          aria-label="Search medical services"
+                          className="w-full h-9 pl-9 pr-8 text-sm bg-white border border-slate-300 rounded-md text-slate-900 focus:border-[#0F766E] focus:outline-none placeholder:text-slate-400"
+                        />
+                        {serviceSearchQuery && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setServiceSearchQuery('');
+                              serviceSearchInputRef.current?.focus();
+                            }}
+                            aria-label="Clear service search"
+                            className="absolute right-2 p-1 text-slate-400 hover:text-slate-700"
+                          >
+                            <X className="w-3.5 h-3.5" />
+                          </button>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Options List */}
+                    <div className="max-h-64 overflow-y-auto divide-y divide-slate-100">
+                      {filteredCategoryServices.length === 0 ? (
+                        <div className="p-3 space-y-2 text-sm">
+                          <p className="font-medium text-slate-700">
+                            No matching services found
+                          </p>
+                          <button
+                            type="button"
+                            onClick={handleSelectNotFound}
+                            className="w-full text-left px-3 py-2 text-xs font-medium text-[#0F766E] bg-[#F0FDFA] border border-[#0F766E]/30 rounded-md hover:bg-[#CCFBF1]/60 transition-colors"
+                          >
+                            Can&apos;t find your service? Select Not Found / Other Service
+                          </button>
+                        </div>
+                      ) : (
+                        filteredCategoryServices.map((svc) => {
+                          const isCurrent =
+                            !isNotFoundSelected &&
+                            selectedService?.serviceId === svc.serviceId;
+                          return (
+                            <button
+                              key={svc.serviceId}
+                              type="button"
+                              role="option"
+                              aria-selected={isCurrent}
+                              onClick={() => handleSelectPredefinedService(svc)}
+                              className={`w-full px-3.5 py-2.5 text-sm text-left flex items-center justify-between gap-2 transition-colors ${
+                                isCurrent
+                                  ? 'bg-[#F0FDFA] text-[#0F766E] font-medium'
+                                  : 'text-slate-800 hover:bg-slate-50'
+                              }`}
+                            >
+                              <span className="truncate">{svc.serviceName}</span>
+                              {isCurrent && (
+                                <Check className="w-4 h-4 text-[#0F766E] shrink-0" />
+                              )}
+                            </button>
+                          );
+                        })
+                      )}
+
+                      {/* Final Option: Not Found / Other Service */}
+                      <div className="border-t border-slate-200 bg-slate-50/50">
+                        <button
+                          type="button"
+                          role="option"
+                          aria-selected={isNotFoundSelected}
+                          onClick={handleSelectNotFound}
+                          className={`w-full px-3.5 py-2.5 text-sm text-left flex items-center justify-between gap-2 transition-colors ${
+                            isNotFoundSelected
+                              ? 'bg-amber-50 text-amber-900 font-medium'
+                              : 'text-slate-700 hover:bg-slate-100'
+                          }`}
+                        >
+                          <span>Not Found / Other Service</span>
+                          {isNotFoundSelected && (
+                            <Check className="w-4 h-4 text-amber-700 shrink-0" />
+                          )}
+                        </button>
+                      </div>
+                    </div>
+                  </div>
                 )}
-              </select>
+              </div>
+
+              {/* Custom Service Input when Not Found / Other Service is active */}
+              {isNotFoundSelected && (
+                <div className="space-y-1.5 pt-1">
+                  <label
+                    htmlFor="medroute-custom-service-input"
+                    className="block text-sm font-medium text-slate-800"
+                  >
+                    Enter the medical service you are looking for
+                  </label>
+                  <input
+                    id="medroute-custom-service-input"
+                    type="text"
+                    value={searchInput.customServiceName || ''}
+                    onChange={(e) => {
+                      setFormError(null);
+                      onChangeSearchInput({
+                        ...searchInput,
+                        customServiceName: e.target.value,
+                      });
+                    }}
+                    placeholder={`e.g. Custom ${searchInput.category} service`}
+                    className="w-full h-11 px-3.5 text-sm bg-white border border-slate-300 rounded-md text-slate-900 focus:border-[#0F766E] focus:outline-none placeholder:text-slate-400"
+                  />
+                </div>
+              )}
             </div>
 
-            {selectedService && (
-              <div className="text-sm text-slate-600 bg-slate-50 border border-slate-200 rounded-md px-4 py-2.5">
-                <span className="font-medium text-slate-800">
-                  {selectedService.serviceName}:
-                </span>{' '}
-                {selectedService.description}
+            {/* Synchronized Service Description / Unverified Notice Panel */}
+            {isNotFoundSelected ? (
+              <div className="text-sm text-amber-900 bg-amber-50/80 border border-amber-200 rounded-md px-4 py-3 space-y-1">
+                <div className="font-semibold text-amber-950">
+                  {searchInput.customServiceName?.trim()
+                    ? `${searchInput.customServiceName.trim()} (Unverified Custom Service)`
+                    : 'Not Found / Other Service'}
+                </div>
+                <p className="text-xs text-amber-800 leading-relaxed">
+                  This service is not currently available in MedRoute&apos;s predefined verified service list and will not be treated as a verified service.
+                </p>
               </div>
+            ) : (
+              selectedService && (
+                <div className="text-sm text-slate-600 bg-slate-50 border border-slate-200 rounded-md px-4 py-2.5">
+                  <span className="font-medium text-slate-800">
+                    {selectedService.serviceName}:
+                  </span>{' '}
+                  {selectedService.description}
+                </div>
+              )
             )}
           </div>
         </div>

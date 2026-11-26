@@ -248,6 +248,7 @@ export interface ProviderJourneyState {
 export interface JourneySearchInput {
   category: ServiceCategory;
   serviceId: string;
+  customServiceName?: string;
   locationMode: 'gps' | 'manual';
   manualLocationText: string;
   startingLocation: StartingLocation | null;

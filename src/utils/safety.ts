@@ -1,4 +1,4 @@
-import type { Coordinates } from '../types/medroute';
+import type { Coordinates, ServiceCategory } from '../types/medroute';
 
 export const UNAVAILABLE_TEXT = 'Information unavailable';
 export const FARE_UNAVAILABLE_TEXT = 'Fare unavailable';
@@ -227,4 +227,16 @@ export function sanitizeTelUri(phone: string | null | undefined): string | null 
   if (!cleaned || cleaned === '+') return null;
   return `tel:${cleaned}`;
 }
+
+export const NOT_FOUND_SERVICE_IDS: Record<ServiceCategory, string> = {
+  Consultation: 'not-found-consultation',
+  Diagnostics: 'not-found-diagnostics',
+  'Treatment and Procedures': 'not-found-treatment',
+};
+
+export function isNotFoundServiceId(serviceId: string | null | undefined): boolean {
+  if (typeof serviceId !== 'string') return false;
+  return Object.values(NOT_FOUND_SERVICE_IDS).includes(serviceId);
+}
+
 
